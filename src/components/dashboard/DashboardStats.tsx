@@ -1,9 +1,12 @@
-import { useDb } from '../../lib/useDb';
+import { useEffect } from 'react';
+import { useEnvelopes, refreshEnvelopes } from '../../lib/useEnvelopes';
 import { isExpired } from '../../lib/utils';
 
 export function DashboardStats() {
-  const db = useDb();
-  const e = db.envelopes;
+  const e = useEnvelopes();
+  useEffect(() => {
+    refreshEnvelopes();
+  }, []);
   const counts = {
     sent: e.filter((x) => x.status === 'sent' && !isExpired(x)).length,
     signed: e.filter((x) => x.status === 'signed').length,
@@ -26,7 +29,7 @@ export function DashboardStats() {
         <div className="n" style={{ color: 'var(--warn)' }}>
           {counts.signed}
         </div>
-        <div className="l">Awaiting countersign</div>
+        <div className="l">Counter-signature pending</div>
       </div>
       <div className="card stat">
         <div className="n" style={{ color: 'var(--ok)' }}>

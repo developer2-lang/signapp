@@ -1,37 +1,58 @@
-import { useState } from 'react';
-import { useDb } from '../lib/useDb';
+import { useEffect, useState } from 'react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Modal } from '../components/ui/Modal';
 import { DocumentViewer } from '../components/signing/DocumentViewer';
-import { CountersignModal } from '../components/signing/CountersignModal';
 import {
-  sendDraft,
-  nudgeEnvelope,
-  extendEnvelope,
-  voidEnvelope,
-  verifyEnvelope,
   getEnvelope,
+  adminVoid,
+  adminExtend,
+  verifyEnvelope,
+  type VerifyResult,
 } from '../services/envelopes';
-import { openSendMail } from '../lib/mail';
+import { CountersignModal } from '../components/signing/CountersignModal';
+import { sendEnvelopeEmail } from '../services/email';
+import { refreshEnvelopes } from '../lib/useEnvelopes';
 import { isExpired, fmt, esc } from '../lib/utils';
 import { downloadPDF } from '../lib/pdf';
 import { pushToast } from '../lib/toast';
 import type { Envelope } from '../types/envelope';
 
-export function EnvelopeDetails({
-  id,
-  onBack,
-}: {
-  id: string;
-  onBack: () => void;
-}) {
-  const db = useDb();
-  const env = db.envelopes.find((x) => x.id === id);
+function appUrl(): string {
+  return (import.meta.env.VITE_APP_URL || window.location.origin).replace(/\/$/, '');
+}
+
+export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void }) {
+  const [env, setEnv] = useState<Envelope | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [verify, setVerify] = useState<VerifyResult | null>(null);
+  const [sending, setSending] = useState(false);
   const [counterOpen, setCounterOpen] = useState(false);
-  const [verify, setVerify] = useState<{ ok: boolean; stored: string | null; recomputed: string } | null>(
-    null,
-  );
-  const [sendInfo, setSendInfo] = useState<Envelope | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    getEnvelope(id)
+      .then((e) => setEnv(e))
+      .catch((e) => pushToast(e instanceof Error ? e.message : 'Failed to load envelope'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="card">
+        <button className="btn ghost sm" onClick={onBack}>
+          ← All envelopes
+        </button>
+        <div className="empty">
+          <div className="big">Loading…</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!env) {
     return (
@@ -49,28 +70,55 @@ export function EnvelopeDetails({
   const expired = isExpired(env);
   const disp = expired ? 'expired' : env.status;
   const canSend = env.status === 'draft';
-  const canCounter = env.status === 'signed';
+  const canResend = env.status === 'sent' || env.status === 'viewed';
   const isDone = env.status === 'completed';
 
   const doSend = async () => {
-    const e = await sendDraft(env.id);
-    if (e) {
-      setSendInfo(e);
-      pushToast('Envelope sent');
+    setSending(true);
+    const res = await sendEnvelopeEmail(env.id);
+    setSending(false);
+    if (res.ok) {
+      pushToast('Envelope sent ✓');
+      load();
+      refreshEnvelopes();
+    } else {
+      pushToast(res.error || 'Email failed');
     }
   };
 
-  const doRemind = () => {
-    nudgeEnvelope(env.id);
-    const fresh = getEnvelope(env.id);
-    if (fresh) openSendMail(fresh, db.settings);
-    pushToast(`Reminder #${fresh?.reminders ?? 1} logged — email draft opened`);
+  const doResend = async () => {
+    setSending(true);
+    const res = await sendEnvelopeEmail(env.id);
+    setSending(false);
+    if (res.ok) {
+      pushToast('Email resent ✓');
+      load();
+      refreshEnvelopes();
+    } else {
+      pushToast(res.error || 'Resend failed');
+    }
+  };
+
+  const doExtend = async () => {
+    const e = await adminExtend(env.id, 7);
+    setEnv(e);
+    refreshEnvelopes();
+    pushToast('Expiry extended +7 days');
+  };
+
+  const doVoid = async () => {
+    if (!confirm('Void this envelope? The access code stops working.')) return;
+    const e = await adminVoid(env.id);
+    setEnv(e);
+    refreshEnvelopes();
+    pushToast('Envelope voided');
   };
 
   const doVerify = async () => {
-    const r = await verifyEnvelope(env.id);
-    if (r) setVerify(r);
+    setVerify(await verifyEnvelope(env));
   };
+
+  const signLink = env.signingToken ? `${appUrl()}/sign/${env.signingToken}` : '';
 
   return (
     <>
@@ -91,44 +139,48 @@ export function EnvelopeDetails({
           <h2 style={{ fontSize: 20 }}>{esc(env.title)}</h2>
           <div className="muted" style={{ marginTop: 4 }}>
             Envelope <span className="mono">{env.id}</span> · created {fmt(env.createdAt)}
-            {env.expiresAt && env.status === 'sent'
+            {env.expiresAt && (env.status === 'sent' || env.status === 'viewed')
               ? ` · ${expired ? 'expired' : 'valid till'} ${fmt(env.expiresAt)}`
               : ''}
-            {env.reminders ? ` · ${env.reminders} reminder${env.reminders > 1 ? 's' : ''}` : ''}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <StatusBadge status={disp} />
           {canSend && (
-            <button className="btn primary sm" onClick={doSend}>
-              Send for signature
+            <button className="btn primary sm" disabled={sending} onClick={doSend}>
+              {sending ? 'Sending…' : 'Send for signature'}
             </button>
           )}
-          {env.status === 'sent' && !expired && (
-            <>
-              <button
-                className="btn ghost sm"
-                onClick={() => navigator.clipboard.writeText(env.token).then(() => pushToast('Code copied'))}
-              >
-                Copy access code
-              </button>
-              <button className="btn ghost sm" onClick={doRemind}>
-                Send reminder ✉
-              </button>
-            </>
+          {canResend && (
+            <button className="btn ghost sm" disabled={sending} onClick={doResend}>
+              {sending ? 'Sending…' : 'Resend email ✉'}
+            </button>
           )}
+          {env.signingToken && (
+            <button
+              className="btn ghost sm"
+              onClick={() => navigator.clipboard.writeText(signLink).then(() => pushToast('Link copied'))}
+            >
+              Copy signing link
+            </button>
+          )}
+          {env.status === 'sent' || env.status === 'viewed' ? (
+            <button
+              className="btn ghost sm"
+              onClick={() =>
+                navigator.clipboard.writeText(env.token).then(() => pushToast('Code copied'))
+              }
+            >
+              Copy access code
+            </button>
+          ) : null}
           {expired && (
-            <button className="btn primary sm" onClick={() => extendEnvelope(env.id)}>
+            <button className="btn primary sm" onClick={doExtend}>
               Extend +7 days
             </button>
           )}
-          {canCounter && (
-            <button className="btn primary sm" onClick={() => setCounterOpen(true)}>
-              Countersign now
-            </button>
-          )}
           {isDone && (
-            <button className="btn primary sm" onClick={() => downloadPDF(env.id)}>
+            <button className="btn primary sm" onClick={() => downloadPDF(env)}>
               Download signed PDF
             </button>
           )}
@@ -137,13 +189,13 @@ export function EnvelopeDetails({
               Verify integrity
             </button>
           )}
-          {env.status !== 'completed' && (
-            <button
-              className="btn danger sm"
-              onClick={() => {
-                if (confirm('Void this envelope? The access code stops working.')) voidEnvelope(env.id);
-              }}
-            >
+          {env.status === 'signed' && (
+            <button className="btn primary sm" onClick={() => setCounterOpen(true)}>
+              Counter-sign
+            </button>
+          )}
+          {env.status !== 'completed' && env.status !== 'declined' && (
+            <button className="btn danger sm" onClick={doVoid}>
               Void
             </button>
           )}
@@ -173,85 +225,34 @@ export function EnvelopeDetails({
                         sha256 · <span title={ev.hash}>{ev.hash.slice(0, 20)}…</span>
                       </>
                     ) : null}
-                    {ev.ua ? (
-                      <>
-                        <br />
-                        {esc(ev.ua.slice(0, 60))}…
-                      </>
-                    ) : null}
                   </div>
                 </div>
               ))}
-              {env.status === 'sent' && (
+              {env.status === 'sent' || env.status === 'viewed' ? (
                 <div className="ev">
-                  <div className="t" style={{ color: 'var(--mute)' }}>
+                  <div className="t" style={{ color: 'var(--warn)' }}>
                     Awaiting recipient signature
                   </div>
                 </div>
-              )}
-              {env.status === 'signed' && (
+              ) : null}
+              {env.status === 'signed' ? (
                 <div className="ev">
                   <div className="t" style={{ color: 'var(--warn)' }}>
-                    Awaiting countersignature
+                    Counter-signature pending — awaiting company signature
                   </div>
                 </div>
-              )}
+              ) : null}
+              {env.status === 'completed' ? (
+                <div className="ev">
+                  <div className="t" style={{ color: 'var(--ok)' }}>
+                    Fully executed
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
       </div>
-
-      <CountersignModal
-        env={env}
-        open={counterOpen}
-        onClose={() => setCounterOpen(false)}
-        onDone={() => {
-          setCounterOpen(false);
-          pushToast('Envelope completed ✓');
-        }}
-      />
-
-      <Modal open={!!sendInfo} onClose={() => setSendInfo(null)}>
-        {sendInfo && (
-          <>
-            <h3>Envelope sent ✓</h3>
-            <p style={{ marginBottom: 10 }}>
-              Share this access code with <strong>{esc(sendInfo.signerName)}</strong>. They enter it in
-              the <strong>Signer portal</strong> to review and sign.
-            </p>
-            <div className="link-box">
-              <code>{sendInfo.token}</code>
-              <button
-                className="btn ghost sm"
-                onClick={() =>
-                  navigator.clipboard.writeText(sendInfo.token).then(() => pushToast('Code copied'))
-                }
-              >
-                Copy
-              </button>
-            </div>
-            <div className="notice">
-              Running as a local tool: email dispatch is prepared via your mail client. When deployed to a
-              server, this becomes an automatic email with a one-click signing link.
-            </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-              <a
-                className="btn ghost"
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  openSendMail(sendInfo, db.settings);
-                }}
-              >
-                Open email draft
-              </a>
-              <button className="btn primary" onClick={() => setSendInfo(null)}>
-                Done
-              </button>
-            </div>
-          </>
-        )}
-      </Modal>
 
       <Modal open={!!verify} onClose={() => setVerify(null)}>
         {verify && (
@@ -283,6 +284,17 @@ export function EnvelopeDetails({
           </>
         )}
       </Modal>
+
+      <CountersignModal
+        env={env}
+        open={counterOpen}
+        onClose={() => setCounterOpen(false)}
+        onDone={() => {
+          setCounterOpen(false);
+          load();
+          refreshEnvelopes();
+        }}
+      />
     </>
   );
 }

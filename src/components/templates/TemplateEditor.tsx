@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../ui/Modal';
 import { Field } from '../ui/Field';
-import { useDb } from '../../lib/useDb';
 import { compressImage } from '../../lib/utils';
 import { pushToast } from '../../lib/toast';
-import { saveTemplate, extractTemplateText } from '../../services/templates';
+import { toErrorMessage } from '../../lib/utils';
+import {
+  saveTemplate,
+  getTemplate,
+  extractTemplateText,
+} from '../../services/templates';
 import type { TemplateKind } from '../../types/template';
 
 export function TemplateEditor({
@@ -16,7 +20,6 @@ export function TemplateEditor({
   editingId: string | null;
   onClose: () => void;
 }) {
-  const db = useDb();
   const [name, setName] = useState('');
   const [kind, setKind] = useState<TemplateKind>('employee');
   const [body, setBody] = useState('');
@@ -27,13 +30,16 @@ export function TemplateEditor({
   useEffect(() => {
     if (!open) return;
     if (editingId) {
-      const t = db.templates.find((x) => x.id === editingId);
-      if (t) {
-        setName(t.name);
-        setKind(t.kind);
-        setBody(t.body);
-        setLetterhead(t.letterhead);
-      }
+      getTemplate(editingId)
+        .then((t) => {
+          if (t) {
+            setName(t.name);
+            setKind(t.kind);
+            setBody(t.body);
+            setLetterhead(t.letterhead);
+          }
+        })
+        .catch((e) => console.error('Failed to load template for edit', e));
     } else {
       setName('');
       setKind('employee');
@@ -66,7 +72,7 @@ export function TemplateEditor({
       } else if ((err as Error).message === 'unsupported') {
         pushToast('Unsupported format — use .docx, .pdf or .txt');
       } else {
-        pushToast('Could not read file: ' + ((err as Error).message || err));
+        pushToast('Could not read file: ' + toErrorMessage(err));
       }
     }
     ev.target.value = '';
@@ -90,6 +96,12 @@ export function TemplateEditor({
       pushToast('Name and body are required');
       return;
     }
+    console.log('Creating template:', {
+      name: name.trim(),
+      kind,
+      body,
+      letterhead,
+    });
     saveTemplate(editingId, { name: name.trim(), kind, body, letterhead });
     pushToast('Template saved');
     onClose();

@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDb } from '../lib/useDb';
-import { getEnvelope, recordSignerViewed, recordSignerConsent, signEnvelope, declineEnvelope } from '../services/envelopes';
-import { isExpired } from '../lib/utils';
+import { getEnvelopeMeta, unlockEnvelope, signEnvelope, declineEnvelope, type SignerMeta } from '../services/signers';
+import { finalizeSignature } from '../services/signatures';
+import { fmt, esc } from '../lib/utils';
 import { pushToast } from '../lib/toast';
 import { downloadPDF } from '../lib/pdf';
 import { AccessCodeScreen } from '../components/signing/AccessCodeScreen';
@@ -11,81 +12,145 @@ import { SignatureCapture, type SignatureCaptureHandle } from '../components/sig
 import { DeclineDialog } from '../components/signing/DeclineDialog';
 import type { Envelope } from '../types/envelope';
 
-type Stage = 'entry' | 'doc' | 'pad' | 'done';
+type Stage = 'entry' | 'code' | 'doc' | 'pad' | 'done';
 
-export function SignerPortal() {
+function extractToken(v: string): string {
+  const t = v.trim();
+  const m = t.match(/\/sign\/([A-Za-z0-9]+)/i);
+  return m ? m[1] : t;
+}
+
+export function SignerPortal({
+  token,
+  onToken,
+  onHome,
+}: {
+  token?: string;
+  onToken?: (t: string) => void;
+  onHome?: () => void;
+}) {
   const db = useDb();
-  const [stage, setStage] = useState<Stage>('entry');
+  const [stage, setStage] = useState<Stage>(token ? 'code' : 'entry');
+  const [meta, setMeta] = useState<SignerMeta | null>(null);
   const [env, setEnv] = useState<Envelope | null>(null);
+  const [code, setCode] = useState('');
   const [consent, setConsent] = useState(false);
   const [declineOpen, setDeclineOpen] = useState(false);
   const sigRef = useRef<SignatureCaptureHandle>(null);
 
+  useEffect(() => {
+    if (token) {
+      setStage('code');
+      getEnvelopeMeta(token)
+        .then((m) => {
+          if (!m) {
+            pushToast('Signing link is invalid or expired');
+            return;
+          }
+          setMeta(m);
+          if (m.alreadySigned || m.status === 'completed') {
+            // open directly once the (correct) code is supplied; pre-fill nothing
+          }
+        })
+        .catch((e) => {
+          console.error('[SignDocument] getEnvelopeMeta failed', e);
+          pushToast(e instanceof Error ? e.message : 'Could not load document');
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   const reset = () => {
-    setStage('entry');
+    setStage(token ? 'code' : 'entry');
     setEnv(null);
     setConsent(false);
+    setCode('');
   };
 
-  const enterCode = (code: string) => {
-    const c = code.trim().toUpperCase();
-    const e = db.envelopes.find((x) => x.token === c);
-    if (!e) {
-      pushToast('No document found for that code');
-      return;
-    }
-    if (e.status === 'declined') {
-      pushToast('This envelope has been voided or declined');
-      return;
-    }
-    if (isExpired(e)) {
-      pushToast('This access code has expired — please ask the sender to extend it');
-      return;
-    }
-    if (e.status === 'completed' || e.status === 'signed') {
+  const submitLink = (v: string) => {
+    const t = extractToken(v);
+    if (!t) return;
+    onToken?.(t);
+  };
+
+  const submitCode = async (v: string) => {
+    if (!token) return;
+    const c = v.trim();
+    try {
+      const e = await unlockEnvelope(token, c);
+      setCode(c);
       setEnv(e);
-      setStage('done');
-      return;
+      if (e.status === 'completed' || e.status === 'signed' || e.status === 'declined') {
+        setStage('done');
+      } else {
+        setStage('doc');
+      }
+    } catch (err) {
+      console.error('[SignDocument] unlockEnvelope failed', err);
+      pushToast(err instanceof Error ? err.message : 'Could not open document');
     }
-    if (e.status !== 'sent') {
-      pushToast('This document has not been sent yet');
-      return;
-    }
-    recordSignerViewed(e.id);
-    setEnv(e);
-    setStage('doc');
   };
 
   const proceedToSign = () => {
     if (!env) return;
-    recordSignerConsent(env.id);
     setStage('pad');
   };
 
   const onSign = async () => {
-    if (!env) return;
+    if (!env || !token) return;
     const input = sigRef.current?.getInput();
     if (!input) {
       pushToast('Please provide a signature');
       return;
     }
-    await signEnvelope(env.id, input);
-    setEnv(getEnvelope(env.id) ?? null);
-    setStage('done');
-    setConsent(false);
+    try {
+      const sig = await finalizeSignature(input, env.docHash);
+      const updated = await signEnvelope(token, code, sig);
+      setEnv(updated);
+      setStage('done');
+      setConsent(false);
+      pushToast('Document signed ✓');
+    } catch (err) {
+      console.error('[SignDocument] signEnvelope failed', err);
+      pushToast(err instanceof Error ? err.message : 'Could not sign document');
+    }
   };
 
-  const onDecline = (reason: string) => {
-    if (!env) return;
-    declineEnvelope(env.id, reason);
-    setEnv(getEnvelope(env.id) ?? null);
-    setDeclineOpen(false);
-    setStage('done');
+  const onDecline = async (reason: string) => {
+    if (!token) return;
+    try {
+      const updated = await declineEnvelope(token, code || (meta ? '' : ''), reason);
+      setEnv(updated);
+      setDeclineOpen(false);
+      setStage('done');
+    } catch (err) {
+      console.error('[SignDocument] declineEnvelope failed', err);
+      pushToast(err instanceof Error ? err.message : 'Could not decline document');
+    }
   };
 
   return (
     <div className="sign-shell" id="signerShell">
-      {stage === 'entry' && <AccessCodeScreen onSubmit={enterCode} />}
+      {(stage === 'entry') && (
+        <AccessCodeScreen
+          onSubmit={submitLink}
+        />
+      )}
+
+      {(stage === 'code') && (
+        <div>
+          {meta && (
+            <div className="card" style={{ maxWidth: 460, margin: '40px auto 12px', textAlign: 'center', padding: 18 }}>
+              <h2 style={{ fontSize: 18, marginBottom: 4 }}>{esc(meta.title)}</h2>
+              <p className="muted">
+                For {esc(meta.signerName)}
+                {meta.expiresAt ? ` · valid till ${fmt(meta.expiresAt)}` : ''}
+              </p>
+            </div>
+          )}
+          <AccessCodeScreen onSubmit={submitCode} />
+        </div>
+      )}
 
       {stage === 'doc' && env && (
         <>
@@ -144,15 +209,20 @@ export function SignerPortal() {
             {env.status === 'completed'
               ? 'Both parties have signed. You can download your copy below.'
               : env.status === 'declined'
-                ? 'Your reason has been recorded and the company has been notified. If the document is revised, you will receive a fresh signing request.'
-                : 'Your signature has been recorded and hash-sealed. The countersignatory will now countersign; you will receive the final PDF by email once complete.'}
+                ? 'Your reason has been recorded. If the document is revised, you will receive a fresh signing request.'
+                : 'Your signature has been recorded and hash-sealed.'}
           </p>
           {env.status === 'completed' && (
-            <button className="btn primary" onClick={() => downloadPDF(env.id)}>
+            <button className="btn primary" onClick={() => downloadPDF(env)}>
               Download signed PDF
             </button>
           )}
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {onHome && (
+              <button className="btn ghost sm" onClick={onHome}>
+                Back to app
+              </button>
+            )}
             <button className="btn ghost sm" onClick={reset}>
               Done
             </button>

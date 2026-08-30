@@ -1,21 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../ui/Modal';
 import { Field } from '../ui/Field';
-import { useDb } from '../../lib/useDb';
-import { saveContact, deleteContact } from '../../services/contacts';
+import { savePerson, deletePerson } from '../../services/people';
 import { pushToast } from '../../lib/toast';
-import type { PersonType } from '../../types/contact';
+import type { Contact, PersonType } from '../../types/contact';
 
 export function ContactEditor({
   open,
-  editingId,
+  editing,
   onClose,
 }: {
   open: boolean;
-  editingId: string | null;
+  editing: Contact | null;
   onClose: () => void;
 }) {
-  const db = useDb();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [type, setType] = useState<PersonType>('employee');
@@ -24,15 +22,12 @@ export function ContactEditor({
 
   useEffect(() => {
     if (!open) return;
-    if (editingId) {
-      const p = db.people.find((x) => x.id === editingId);
-      if (p) {
-        setName(p.name);
-        setEmail(p.email);
-        setType(p.type);
-        setDesignation(p.designation);
-        setAddress(p.address);
-      }
+    if (editing) {
+      setName(editing.name);
+      setEmail(editing.email);
+      setType(editing.type);
+      setDesignation(editing.designation);
+      setAddress(editing.address);
     } else {
       setName('');
       setEmail('');
@@ -41,14 +36,14 @@ export function ContactEditor({
       setAddress('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editingId]);
+  }, [open, editing]);
 
   const save = () => {
     if (!name.trim() || !email.trim()) {
       pushToast('Name and email are required');
       return;
     }
-    saveContact(editingId, {
+    savePerson(editing?.id ?? null, {
       name: name.trim(),
       email: email.trim(),
       type,
@@ -60,15 +55,15 @@ export function ContactEditor({
   };
 
   const remove = () => {
-    if (editingId && confirm('Remove this person?')) {
-      deleteContact(editingId);
+    if (editing && confirm('Remove this person?')) {
+      deletePerson(editing.id);
       onClose();
     }
   };
 
   return (
     <Modal open={open} onClose={onClose} maxWidth={560}>
-      <h3>{editingId ? 'Edit person' : 'Add person'}</h3>
+      <h3>{editing ? 'Edit person' : 'Add person'}</h3>
       <Field label="Full name">
         <input value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
@@ -93,7 +88,7 @@ export function ContactEditor({
         <button className="btn ghost" onClick={onClose}>
           Cancel
         </button>
-        {editingId && (
+        {editing && (
           <button className="btn danger" onClick={remove}>
             Delete
           </button>

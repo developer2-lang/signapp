@@ -1,7 +1,8 @@
-import { useDb } from '../../lib/useDb';
+import { useEffect } from 'react';
+import { useEnvelopes, refreshEnvelopes } from '../../lib/useEnvelopes';
 import { isStale, isExpired, fmt } from '../../lib/utils';
-import { nudgeEnvelope, extendEnvelope } from '../../services/envelopes';
-import { openReminderMail } from '../../lib/mail';
+import { sendEnvelopeEmail } from '../../services/email';
+import { adminExtend } from '../../services/envelopes';
 import { pushToast } from '../../lib/toast';
 import type { Envelope } from '../../types/envelope';
 
@@ -10,13 +11,17 @@ export function PendingEnvelopes({
 }: {
   onOpenEnvelope: (id: string) => void;
 }) {
-  const db = useDb();
-  const items: { x: Envelope; kind: 'counter' | 'stale' | 'expired' }[] = [];
-  db.envelopes.filter((x) => x.status === 'signed').forEach((x) => items.push({ x, kind: 'counter' }));
-  db.envelopes.filter(isStale).forEach((x) => items.push({ x, kind: 'stale' }));
-  db.envelopes.filter(isExpired).forEach((x) => items.push({ x, kind: 'expired' }));
+  const items = useEnvelopes();
+  useEffect(() => {
+    refreshEnvelopes();
+  }, []);
 
-  if (!items.length) {
+  const rows: { x: Envelope; kind: 'counter' | 'stale' | 'expired' }[] = [];
+  items.filter((x) => x.status === 'signed').forEach((x) => rows.push({ x, kind: 'counter' }));
+  items.filter(isStale).forEach((x) => rows.push({ x, kind: 'stale' }));
+  items.filter(isExpired).forEach((x) => rows.push({ x, kind: 'expired' }));
+
+  if (!rows.length) {
     return (
       <div className="empty">
         <div className="big">Nothing pending on your side</div>
@@ -25,16 +30,26 @@ export function PendingEnvelopes({
     );
   }
 
-  const nudge = (x: Envelope) => {
-    nudgeEnvelope(x.id);
-    const fresh = db.envelopes.find((e) => e.id === x.id);
-    if (fresh) openReminderMail(fresh, db.settings);
-    pushToast(`Reminder #${fresh?.reminders ?? 1} logged — email draft opened`);
+  const resend = async (x: Envelope) => {
+    const res = await sendEnvelopeEmail(x.id);
+    if (res.ok) {
+      pushToast('Reminder email sent ✓');
+      refreshEnvelopes();
+    } else {
+      pushToast(res.error || 'Email failed');
+    }
+  };
+
+  const extend = async (x: Envelope) => {
+    const e = await adminExtend(x.id, 7);
+    pushToast('Expiry extended +7 days');
+    refreshEnvelopes();
+    onOpenEnvelope(e.id);
   };
 
   return (
     <>
-      {items.map(({ x, kind }) => {
+      {rows.map(({ x, kind }) => {
         if (kind === 'counter') {
           return (
             <div
@@ -53,10 +68,8 @@ export function PendingEnvelopes({
                 <strong>{x.title}</strong>
                 <div className="muted">
                   {x.signerName} signed{' '}
-                  {fmt(
-                    x.events.find((ev) => ev.type === 'signed')?.at || x.updatedAt,
-                  )}{' '}
-                  · your countersignature is pending
+                  {fmt(x.events.find((ev) => ev.type === 'signed')?.at || x.updatedAt)} · your
+                  countersignature is pending
                 </div>
               </div>
               <button className="btn primary sm" onClick={() => onOpenEnvelope(x.id)}>
@@ -86,8 +99,8 @@ export function PendingEnvelopes({
                   {x.reminders ? `· ${x.reminders} reminder${x.reminders > 1 ? 's' : ''} sent` : ''}
                 </div>
               </div>
-              <button className="btn ghost sm" onClick={() => nudge(x)}>
-                Send reminder ✉
+              <button className="btn ghost sm" onClick={() => resend(x)}>
+                Resend email ✉
               </button>
             </div>
           );
@@ -111,7 +124,7 @@ export function PendingEnvelopes({
                 Access code expired {fmt(x.expiresAt || '')} — {x.signerName} can no longer sign
               </div>
             </div>
-            <button className="btn ghost sm" onClick={() => extendEnvelope(x.id)}>
+            <button className="btn ghost sm" onClick={() => extend(x)}>
               Extend +7 days
             </button>
           </div>

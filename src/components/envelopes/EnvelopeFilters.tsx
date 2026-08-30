@@ -18,7 +18,7 @@ export function EnvelopeFilters({ q, s, onQ, onS }: EnvelopeFiltersProps) {
         <option value="draft">Draft</option>
         <option value="sent">Awaiting signer</option>
         <option value="expired">Expired</option>
-        <option value="signed">Awaiting countersign</option>
+        <option value="signed">Counter-signature pending</option>
         <option value="completed">Completed</option>
         <option value="declined">Declined</option>
       </select>

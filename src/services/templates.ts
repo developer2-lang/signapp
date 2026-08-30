@@ -4,6 +4,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 
 import type { Template, TemplateKind } from '../types/template';
+import { getTypeMaps, type TypeMaps } from './peopleTypes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -14,89 +15,113 @@ export interface TemplateInput {
   letterhead: string | null;
 }
 
+function rowToTemplate(row: any, maps: TypeMaps): Template {
+  return {
+    id: row.id,
+    name: row.name,
+    kind: (maps.kindById[row.type_id] as TemplateKind) ?? 'employee',
+    body: row.body ?? '',
+    letterhead: row.storage_path ?? null,
+  };
+}
+
 export async function listTemplates(): Promise<Template[]> {
+  console.log('Loading templates from Supabase...');
+
   const { data, error } = await supabase
     .from('templates')
     .select('*')
     .order('name');
 
   if (error) {
-    console.error('Error loading templates:', error);
+    console.error('Supabase template error:', error);
     throw error;
   }
 
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    name: row.name,
-    kind: row.kind ?? row.type ?? 'employee',
-    body: row.body ?? '',
-    letterhead: row.storage_path ?? null,
-  }));
+  const maps = await getTypeMaps();
+  const result = (data ?? []).map((row: any) => rowToTemplate(row, maps));
+
+  console.log('Templates from Supabase:', result);
+  return result;
+}
+
+export async function getTemplate(id: string): Promise<Template | null> {
+  const { data, error } = await supabase
+    .from('templates')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (error) {
+    console.error('Supabase getTemplate error:', error);
+    throw error;
+  }
+
+  if (!data) return null;
+
+  const maps = await getTypeMaps();
+  return rowToTemplate(data, maps);
 }
 
 export async function saveTemplate(
   id: string | null,
-  input: TemplateInput
+  input: TemplateInput,
 ): Promise<Template> {
+  console.log('Creating/updating template:', input);
+
+  const maps = await getTypeMaps();
+  const type_id = maps.idByKind[input.kind];
+
+  if (!type_id) {
+    const msg = `Unknown template kind: ${input.kind}`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+
+  const payload = {
+    name: input.name,
+    type_id,
+    body: input.body,
+    storage_path: input.letterhead,
+  };
 
   if (id) {
     const { data, error } = await supabase
       .from('templates')
-      .update({
-        name: input.name,
-        body: input.body,
-        storage_path: input.letterhead,
-      })
+      .update(payload)
       .eq('id', id)
       .select()
       .single();
 
     if (error) {
-      console.error('Error updating template:', error);
+      console.error('Supabase template error:', error);
       throw error;
     }
 
-    return {
-      id: data.id,
-      name: data.name,
-      kind: input.kind,
-      body: data.body ?? '',
-      letterhead: data.storage_path ?? null,
-    };
+    return rowToTemplate(data, maps);
   }
 
   const { data, error } = await supabase
     .from('templates')
-    .insert({
-      name: input.name,
-      body: input.body,
-      storage_path: input.letterhead,
-    })
+    .insert(payload)
     .select()
     .single();
 
   if (error) {
-    console.error('Error creating template:', error);
+    console.error('Supabase template error:', error);
     throw error;
   }
 
-  return {
-    id: data.id,
-    name: data.name,
-    kind: input.kind,
-    body: data.body ?? '',
-    letterhead: data.storage_path ?? null,
-  };
+  return rowToTemplate(data, maps);
 }
 
 export async function deleteTemplate(id: string): Promise<void> {
-  const { error } = await supabase
-    .from('templates')
-    .delete()
-    .eq('id', id);
+  console.log('Deleting template:', id);
+
+  const { error } = await supabase.from('templates').delete().eq('id', id);
 
   if (error) {
-    console.error('Error deleting template:', error);
+    console.error('Supabase template error:', error);
     throw error;
   }
 }
@@ -113,7 +138,7 @@ export async function extractTemplateText(file: File): Promise<string> {
 
   if (ext === 'pdf') {
     const pdf = await pdfjsLib.getDocument({
-      data: await file.arrayBuffer()
+      data: await file.arrayBuffer(),
     }).promise;
 
     let text = '';

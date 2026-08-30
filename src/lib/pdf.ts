@@ -6,15 +6,11 @@ import { pushToast } from './toast';
 
 /**
  * Generate and download the final signed PDF for a completed (or in-progress)
- * envelope. The original app produced this entirely client-side; the logic is
- * preserved here as an isolated module so it can later be replaced by a backend
- * PDF service without touching the UI.
+ * envelope. The data is passed in (the envelope now lives in Supabase); the
+ * company settings are still read from the local store.
  */
-export function downloadPDF(id: string): void {
-  const db = getDB();
-  const e = db.envelopes.find((x) => x.id === id);
-  if (!e) return;
-  const s = db.settings;
+export function downloadPDF(e: Envelope): void {
+  const s = getDB().settings;
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const W = 595;
   const M = 56;

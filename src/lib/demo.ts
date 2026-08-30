@@ -68,11 +68,15 @@ async function demoEnv(o: DemoEnvOptions): Promise<Envelope> {
     token: o.token || token(),
     createdAt: o.created,
     updatedAt: o.updated || o.created,
+    sentAt: null,
+    completedAt: null,
+    viewedAt: null,
     reminders: o.reminders || 0,
     expiresAt: o.expiresAt || null,
     docHash: null,
     signature: o.signature || null,
     countersignature: o.counter || null,
+    countersignedAt: o.counter ? (o.updated || o.created) : null,
     events: o.events || [],
   };
   if (o.sealed) e.docHash = await sha256(`${body}|${e.id}|${o.p.email}`);

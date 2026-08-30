@@ -91,7 +91,11 @@ export function mergeBody(body: string, fields: Record<string, string>): string 
 
 /* ── status helpers ── */
 export function isExpired(e: Envelope): boolean {
-  return e.status === 'sent' && !!e.expiresAt && new Date(e.expiresAt) < new Date();
+  return (
+    (e.status === 'sent' || e.status === 'viewed') &&
+    !!e.expiresAt &&
+    new Date(e.expiresAt) < new Date()
+  );
 }
 
 export function dispStatus(e: Envelope): DisplayStatus {
@@ -120,12 +124,41 @@ export interface StatusMeta {
 const STATUS_MAP: Record<DisplayStatus, StatusMeta> = {
   draft: { label: 'Draft', cls: 'draft' },
   sent: { label: 'Awaiting signer', cls: 'sent' },
-  signed: { label: 'Awaiting countersign', cls: 'signed' },
+  viewed: { label: 'Viewed', cls: 'sent' },
+  signed: { label: 'Counter-signature pending', cls: 'signed' },
   completed: { label: 'Completed', cls: 'completed' },
   declined: { label: 'Declined', cls: 'declined' },
+  failed: { label: 'Failed', cls: 'declined' },
   expired: { label: 'Expired', cls: 'expired' },
 };
 
 export function statusMeta(s: DisplayStatus): StatusMeta {
   return STATUS_MAP[s] || { label: s, cls: 'draft' };
+}
+
+/* ── error messages ── */
+/**
+ * Convert any thrown value into a human-readable string. Supabase/API errors are
+ * plain objects ({ code, message, details, hint }) rather than Error instances,
+ * so stringifying them naively produces "[object Object]". This extracts the
+ * most useful field available and never returns "[object Object]".
+ */
+export function toErrorMessage(e: unknown, fallback = 'Something went wrong'): string {
+  if (e == null) return fallback;
+  if (e instanceof Error) return e.message || fallback;
+  if (typeof e === 'string') return e;
+  if (typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    for (const key of ['message', 'error', 'details', 'hint']) {
+      const v = o[key];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    try {
+      const s = JSON.stringify(e);
+      if (s && s !== '{}') return s;
+    } catch {
+      /* ignore */
+    }
+  }
+  return fallback;
 }

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { toErrorMessage } from './utils';
 
 export interface ToastItem {
   id: number;
@@ -13,9 +14,10 @@ function emit() {
   listeners.forEach((l) => l());
 }
 
-export function pushToast(text: string): void {
+export function pushToast(text: string | unknown): void {
+  const message = typeof text === 'string' ? text : toErrorMessage(text, 'Something went wrong');
   const id = ++seq;
-  toasts = [...toasts, { id, text }];
+  toasts = [...toasts, { id, text: message }];
   emit();
   setTimeout(() => {
     toasts = toasts.filter((t) => t.id !== id);

@@ -1,27 +1,21 @@
 import { StatusBadge } from '../ui/StatusBadge';
-import { useDb } from '../../lib/useDb';
 import { fmt, isExpired } from '../../lib/utils';
 import type { Envelope } from '../../types/envelope';
 
 export function EnvelopeTable({
   rows,
   onOpen,
+  onDelete,
 }: {
   rows: Envelope[];
   onOpen: (id: string) => void;
+  onDelete: (env: Envelope) => void;
 }) {
-  const db = useDb();
   if (!rows.length) {
-    const emptyMsg = db.envelopes.length
-      ? 'No envelopes match your filter'
-      : 'No envelopes yet';
-    const sub = db.envelopes.length
-      ? 'Try clearing the search or status filter.'
-      : 'Click “New envelope” to draft, merge and send your first document.';
     return (
       <div className="empty">
-        <div className="big">{emptyMsg}</div>
-        {sub}
+        <div className="big">No envelopes yet</div>
+        Click “New envelope” to draft, merge and send your first document.
       </div>
     );
   }
@@ -56,12 +50,12 @@ export function EnvelopeTable({
               ) : null}
             </td>
             <td className="muted">{fmt(x.updatedAt)}</td>
-            <td>
-              <span className="hash-chip">
-                {x.status === 'sent' && !isExpired(x) ? x.token : '—'}
-              </span>
-            </td>
-            <td style={{ textAlign: 'right' }}>
+              <td>
+                <span className="hash-chip">
+                  {(x.status === 'sent' || x.status === 'viewed') && !isExpired(x) ? x.token : '—'}
+                </span>
+              </td>
+            <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
               <button
                 className="btn ghost sm"
                 onClick={(e) => {
@@ -70,6 +64,15 @@ export function EnvelopeTable({
                 }}
               >
                 Open
+              </button>{' '}
+              <button
+                className="btn danger sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(x);
+                }}
+              >
+                Delete
               </button>
             </td>
           </tr>

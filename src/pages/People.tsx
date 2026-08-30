@@ -1,29 +1,55 @@
 import { useEffect, useState } from 'react';
-import { getPeople } from '../services/people';
+
+import { ContactTable } from '../components/contacts/ContactTable';
+import { ContactEditor } from '../components/contacts/ContactEditor';
+
+import { listPeople, deletePerson } from '../services/people';
+
+import type { Contact } from '../types/contact';
 
 export function People() {
-  const [people, setPeople] = useState<any[]>([]);
+  const [people, setPeople] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadPeople() {
-      try {
-        const data = await getPeople();
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<Contact | null>(null);
 
-        console.log('PEOPLE FROM SUPABASE:', data);
-
-        setPeople(data);
-      } catch (err: any) {
-        console.error('SUPABASE ERROR:', err);
-        setError(err.message || 'Failed to load people');
-      } finally {
-        setLoading(false);
-      }
+  async function loadPeople() {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await listPeople();
+      setPeople(data);
+    } catch (err: any) {
+      console.error('SUPABASE PEOPLE ERROR:', err);
+      setError(err.message || 'Failed to load people');
+    } finally {
+      setLoading(false);
     }
+  }
 
+  useEffect(() => {
     loadPeople();
   }, []);
+
+  const openNew = () => {
+    setEditTarget(null);
+    setEditorOpen(true);
+  };
+
+  const openEdit = (id: string) => {
+    const p = people.find((x) => x.id === id) ?? null;
+    setEditTarget(p);
+    setEditorOpen(true);
+  };
+
+  const doDelete = async (id: string) => {
+    if (confirm('Delete this person? This removes the row from Supabase.')) {
+      await deletePerson(id);
+      await loadPeople();
+    }
+  };
 
   if (loading) {
     return <div style={{ padding: 30 }}>Loading people...</div>;
@@ -41,41 +67,27 @@ export function People() {
     <div>
       <div className="section-title">
         <h2>Employees &amp; vendors</h2>
+        <button className="btn primary" onClick={openNew}>
+          ＋ New person
+        </button>
       </div>
 
       <div className="card" style={{ padding: 20 }}>
-        {people.length === 0 ? (
-          <p>No people found in Supabase.</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left', padding: 10 }}>Name</th>
-                <th style={{ textAlign: 'left', padding: 10 }}>Email</th>
-                <th style={{ textAlign: 'left', padding: 10 }}>Type</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {people.map((person) => (
-                <tr key={person.id}>
-                  <td style={{ padding: 10 }}>
-                    {person.full_name}
-                  </td>
-
-                  <td style={{ padding: 10 }}>
-                    {person.email}
-                  </td>
-
-                  <td style={{ padding: 10 }}>
-                    {person.type_id}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        <ContactTable
+          people={people}
+          onEdit={openEdit}
+          onDelete={doDelete}
+        />
       </div>
+
+      <ContactEditor
+        open={editorOpen}
+        editing={editTarget}
+        onClose={() => {
+          setEditorOpen(false);
+          loadPeople();
+        }}
+      />
     </div>
   );
 }

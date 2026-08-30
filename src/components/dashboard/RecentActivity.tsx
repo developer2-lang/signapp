@@ -1,9 +1,13 @@
-import { useDb } from '../../lib/useDb';
+import { useEffect } from 'react';
+import { useEnvelopes, refreshEnvelopes } from '../../lib/useEnvelopes';
 import { fmt } from '../../lib/utils';
 
 export function RecentActivity() {
-  const db = useDb();
-  const acts = db.envelopes
+  const envelopes = useEnvelopes();
+  useEffect(() => {
+    refreshEnvelopes();
+  }, []);
+  const acts = envelopes
     .flatMap((x) => x.events.map((ev) => ({ ...ev, env: x.title })))
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, 6);

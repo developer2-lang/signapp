@@ -1,4 +1,5 @@
-import { useDb } from '../../lib/useDb';
+import { useEffect } from 'react';
+import { useEnvelopes, refreshEnvelopes } from '../../lib/useEnvelopes';
 import {
   hoursBetween,
   fmtHrs,
@@ -19,8 +20,10 @@ function between(e: Envelope, a: string, b: string): number | null {
 }
 
 export function SigningPerformance() {
-  const db = useDb();
-  const e = db.envelopes;
+  const e = useEnvelopes();
+  useEffect(() => {
+    refreshEnvelopes();
+  }, []);
   const dispatched = e.filter((x) => x.events.some((ev) => ev.type === 'sent'));
   const rate = dispatched.length
     ? Math.round((100 * dispatched.filter((x) => x.status === 'completed').length) / dispatched.length)
