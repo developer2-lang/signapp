@@ -106,15 +106,15 @@ interface DbSignerRow {
   decline_reason?: string | null;
 }
 
-function recipientName(r: DbSignerRow | undefined): string {
+function recipientName(r: DbSignerRow | undefined | null): string {
   return r?.signer_name ?? r?.name ?? '';
 }
 
-function recipientEmail(r: DbSignerRow | undefined): string {
+function recipientEmail(r: DbSignerRow | undefined | null): string {
   return r?.signer_email ?? r?.email ?? '';
 }
 
-function mapRecipient(r: DbSignerRow | undefined, index: number): EnvelopeRecipient {
+function mapRecipient(r: DbSignerRow | undefined | null, index: number): EnvelopeRecipient {
   return {
     id: r?.id ?? '',
     personId: r?.person_id ?? null,
@@ -138,14 +138,19 @@ function asStatus(s: string | null): Envelope['status'] {
 
 function buildEvents(e: DbEnvelopeRow): EnvelopeEvent[] {
   const ev: EnvelopeEvent[] = [];
-  const push = (type: EnvelopeEventType, at: string | null, label: string) => {
+  const push = (type: EnvelopeEventType, at: string | null | undefined, label: string) => {
     if (at) ev.push({ type, label, at });
   };
   push('created', e.created_at, `Envelope created${e.title ? ` — ${e.title}` : ''}`);
   push('sent', e.sent_at, `Sent to ${e.signer_name ?? 'signer'} <${e.signer_email ?? ''}>`);
   push('viewed', e.viewed_at, 'Document opened by signer (access code entered)');
-  const signers = e.signers ?? e.recipients ?? [];
-  signers.forEach((s) => {
+  const signers: DbSignerRow[] = Array.isArray(e.signers)
+    ? e.signers
+    : Array.isArray(e.recipients)
+      ? e.recipients
+      : [];
+  for (const s of signers) {
+    if (!s) continue;
     if (s.signed_at) {
       const verb = s.role === 'countersigner' ? 'countersigned by' : 'signed by';
       push('signed', s.signed_at, `Digitally ${verb} ${recipientName(s) || 'recipient'}`);
@@ -153,7 +158,7 @@ function buildEvents(e: DbEnvelopeRow): EnvelopeEvent[] {
     if (s.declined_at) {
       push('declined', s.declined_at, `Declined by ${recipientName(s) || 'recipient'}`);
     }
-  });
+  }
   push('completed', e.completed_at, 'Envelope completed · final PDF available');
   if (e.countersigned_at) {
     push('countersigned', e.countersigned_at, 'Countersigned by company');
@@ -162,27 +167,34 @@ function buildEvents(e: DbEnvelopeRow): EnvelopeEvent[] {
 }
 
 export function dbRowToEnvelope(row: DbEnvelopeRow): Envelope {
-  const signers = row.signers ?? row.recipients ?? [];
-  const primary = signers[0] ?? null;
+  const signers: DbSignerRow[] = Array.isArray(row.signers)
+    ? row.signers
+    : Array.isArray(row.recipients)
+      ? row.recipients
+      : [];
+  const primary = signers.length > 0 ? signers[0] : null;
   const acting =
-    (row.signer_id ? signers.find((s) => s.id === row.signer_id) : undefined) ??
+    (row.signer_id ? signers.find((s) => s && s.id === row.signer_id) : undefined) ??
     (row.signer_name || row.signer_email
       ? signers.find(
           (s) =>
+            s &&
             recipientName(s) === row.signer_name &&
             recipientEmail(s) === row.signer_email,
         )
       : null) ??
     primary;
 
-  const attachments: EnvelopeAttachment[] = (row.attachments ?? []).map((a) => ({
-    id: a.id,
-    fileName: a.file_name,
-    storagePath: a.storage_path,
-    mimeType: a.mime_type,
-    fileSize: a.file_size,
-    createdAt: a.created_at ?? now(),
-  }));
+  const attachments: EnvelopeAttachment[] = Array.isArray(row.attachments)
+    ? row.attachments.filter(Boolean).map((a) => ({
+        id: a.id,
+        fileName: a.file_name,
+        storagePath: a.storage_path,
+        mimeType: a.mime_type,
+        fileSize: a.file_size,
+        createdAt: a.created_at ?? now(),
+      }))
+    : [];
 
   return {
     id: row.id,
@@ -211,7 +223,7 @@ export function dbRowToEnvelope(row: DbEnvelopeRow): Envelope {
     signature: acting?.signature ?? primary?.signature ?? null,
     countersignature: row.countersignature ?? null,
     countersignedAt: row.countersigned_at ?? null,
-    recipients: signers.map(mapRecipient),
+    recipients: signers.filter(Boolean).map(mapRecipient),
     events: buildEvents(row),
     attachments,
   };

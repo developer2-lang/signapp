@@ -88,7 +88,7 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
   const expired = isExpired(env);
   const disp = expired ? 'expired' : env.status;
   const canSend = env.status === 'draft';
-  const canResend = env.status === 'sent' || env.status === 'viewed';
+  const canResend = env.status === 'sent' || env.status === 'viewed' || env.status === 'signed';
   const isDone = env.status === 'completed';
   const isLegacy = env.signingMode == null;
   const signedCount = env.recipients.filter((r) => r.status === 'signed').length;
