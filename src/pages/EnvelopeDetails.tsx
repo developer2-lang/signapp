@@ -15,10 +15,28 @@ import { refreshEnvelopes } from '../lib/useEnvelopes';
 import { isExpired, fmt, esc } from '../lib/utils';
 import { downloadPDF } from '../lib/pdf';
 import { pushToast } from '../lib/toast';
-import type { Envelope } from '../types/envelope';
+import type { Envelope, EnvelopeRecipient } from '../types/envelope';
 
 function appUrl(): string {
   return (import.meta.env.VITE_APP_URL || window.location.origin).replace(/\/$/, '');
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  signer: 'Signer',
+  countersigner: 'Countersigner',
+};
+
+function recipientState(r: EnvelopeRecipient): { icon: string; text: string; color: string } {
+  switch (r.status) {
+    case 'signed':
+      return { icon: '✓', text: `Signed: ${fmt(r.signedAt || '')}`, color: 'var(--ok)' };
+    case 'active':
+      return { icon: '→', text: 'Waiting for action', color: 'var(--cobalt)' };
+    case 'declined':
+      return { icon: '✗', text: 'Declined', color: 'var(--danger)' };
+    default:
+      return { icon: '○', text: 'Pending', color: 'var(--mute)' };
+  }
 }
 
 export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void }) {
@@ -72,6 +90,9 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
   const canSend = env.status === 'draft';
   const canResend = env.status === 'sent' || env.status === 'viewed';
   const isDone = env.status === 'completed';
+  const isLegacy = env.signingMode == null;
+  const signedCount = env.recipients.filter((r) => r.status === 'signed').length;
+  const totalRecipients = env.recipients.length;
 
   const doSend = async () => {
     setSending(true);
@@ -189,7 +210,7 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
               Verify integrity
             </button>
           )}
-          {env.status === 'signed' && (
+          {env.status === 'signed' && isLegacy && (
             <button className="btn primary sm" onClick={() => setCounterOpen(true)}>
               Counter-sign
             </button>
@@ -207,6 +228,59 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
           <DocumentViewer env={env} />
         </div>
         <div>
+          {env.recipients.length > 0 && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <h3 style={{ fontSize: 14, marginBottom: 6 }}>
+                Recipients
+                {totalRecipients > 1 && (
+                  <span className="muted" style={{ fontWeight: 400 }}>
+                    {' '}
+                    · {signedCount} of {totalRecipients} completed
+                  </span>
+                )}
+              </h3>
+              {!isDone && totalRecipients > 1 && env.status !== 'declined' && (
+                <p className="muted" style={{ marginBottom: 10 }}>
+                  {env.signingMode === 'sequential'
+                    ? 'Sequential signing — recipients act in order.'
+                    : 'Simultaneous signing — all notified at once.'}
+                </p>
+              )}
+              <div>
+                {env.recipients
+                  .slice()
+                  .sort((a, b) => a.order - b.order)
+                  .map((r) => {
+                    const st = recipientState(r);
+                    return (
+                      <div
+                        key={r.id}
+                        style={{
+                          display: 'flex',
+                          gap: 10,
+                          padding: '9px 0',
+                          borderBottom: '1px solid var(--line)',
+                          alignItems: 'flex-start',
+                        }}
+                      >
+                        <div style={{ width: 16, color: st.color, fontWeight: 700 }}>{st.icon}</div>
+                        <div>
+                          <div>
+                            <strong>{r.order}. {esc(r.name)}</strong>{' '}
+                            <span className="pill draft">{ROLE_LABEL[r.role] || r.role}</span>
+                          </div>
+                          <div className="muted">{esc(r.email)}</div>
+                          <div className="muted" style={{ color: st.color }}>
+                            {st.text}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <h3 style={{ fontSize: 14, marginBottom: 6 }}>Chain of custody</h3>
             <p className="muted" style={{ marginBottom: 12 }}>
@@ -231,14 +305,29 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
               {env.status === 'sent' || env.status === 'viewed' ? (
                 <div className="ev">
                   <div className="t" style={{ color: 'var(--warn)' }}>
-                    Awaiting recipient signature
+                    {totalRecipients > 1
+                      ? `Awaiting signature: ${env.recipients
+                          .sort((a, b) => a.order - b.order)
+                          .find((r) => r.status !== 'signed' && r.status !== 'declined')?.name ?? 'next recipient'}`
+                      : 'Awaiting recipient signature'}
                   </div>
                 </div>
               ) : null}
-              {env.status === 'signed' ? (
+              {env.status === 'signed' && isLegacy ? (
                 <div className="ev">
                   <div className="t" style={{ color: 'var(--warn)' }}>
                     Counter-signature pending — awaiting company signature
+                  </div>
+                </div>
+              ) : null}
+              {env.status === 'signed' && !isLegacy && totalRecipients > 1 ? (
+                <div className="ev">
+                  <div className="t" style={{ color: 'var(--warn)' }}>
+                    {signedCount === totalRecipients
+                      ? 'All recipients have signed'
+                      : `Awaiting signature: ${env.recipients
+                          .sort((a, b) => a.order - b.order)
+                          .find((r) => r.status !== 'signed' && r.status !== 'declined')?.name ?? 'next recipient'}`}
                   </div>
                 </div>
               ) : null}

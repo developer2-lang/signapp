@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDb } from '../lib/useDb';
-import { getEnvelopeMeta, unlockEnvelope, signEnvelope, declineEnvelope, type SignerMeta } from '../services/signers';
+import {
+  getEnvelopeMeta,
+  unlockEnvelope,
+  signEnvelope,
+  declineEnvelope,
+  notifyNextRecipient,
+  type SignerMeta,
+} from '../services/signers';
 import { finalizeSignature } from '../services/signatures';
 import { fmt, esc } from '../lib/utils';
 import { pushToast } from '../lib/toast';
@@ -109,7 +116,12 @@ export function SignerPortal({
       setEnv(updated);
       setStage('done');
       setConsent(false);
-      pushToast('Document signed ✓');
+      // In sequential mode, notify the next active recipient automatically.
+      notifyNextRecipient(updated).catch((err) => {
+        console.error('[SignDocument] notify next recipient failed', err);
+      });
+      const verb = updated.role === 'countersigner' ? 'Countersigned' : 'Document signed';
+      pushToast(`${verb} ✓`);
     } catch (err) {
       console.error('[SignDocument] signEnvelope failed', err);
       pushToast(err instanceof Error ? err.message : 'Could not sign document');
@@ -144,8 +156,19 @@ export function SignerPortal({
               <h2 style={{ fontSize: 18, marginBottom: 4 }}>{esc(meta.title)}</h2>
               <p className="muted">
                 For {esc(meta.signerName)}
+                {meta.role === 'countersigner' ? ' · Countersignature required' : ' · Signature required'}
                 {meta.expiresAt ? ` · valid till ${fmt(meta.expiresAt)}` : ''}
               </p>
+              {meta.alreadySigned && (
+                <div className="notice" style={{ textAlign: 'left' }}>
+                  You have already signed this step.
+                </div>
+              )}
+              {meta.signingMode === 'sequential' && !meta.alreadySigned && !meta.isActive && (
+                <div className="notice" style={{ textAlign: 'left' }}>
+                  It is not your turn yet — an earlier recipient must sign first.
+                </div>
+              )}
             </div>
           )}
           <AccessCodeScreen onSubmit={submitCode} />
@@ -156,7 +179,15 @@ export function SignerPortal({
         <>
           <div style={{ margin: '6px 0 16px' }}>
             <h2 style={{ fontSize: 19 }}>{env.title}</h2>
-            <p className="muted">From {db.settings.company} · review carefully before signing</p>
+            <p className="muted">
+              From {db.settings.company} ·{' '}
+              {env.role === 'countersigner'
+                ? 'you are asked to countersign this document'
+                : 'review carefully before signing'}
+              {env.signingMode === 'sequential' && env.recipients.length > 1
+                ? ` · Signing order: ${(env.recipients.findIndex((r) => r.id === env.signerId) ?? 0) + 1} of ${env.recipients.length}`
+                : ''}
+            </p>
           </div>
           <DocumentViewer env={env} />
           <ConsentSection name={env.signerName} checked={consent} onChange={setConsent} />
@@ -177,7 +208,9 @@ export function SignerPortal({
 
       {stage === 'pad' && env && (
         <div className="card" style={{ maxWidth: 560, margin: '20px auto' }}>
-          <h3 style={{ marginBottom: 4 }}>Adopt your signature</h3>
+          <h3 style={{ marginBottom: 4 }}>
+            {env.role === 'countersigner' ? 'Adopt your countersignature' : 'Adopt your signature'}
+          </h3>
           <p className="muted" style={{ marginBottom: 14 }}>
             Draw with mouse/finger, or type your name.
           </p>
@@ -187,7 +220,7 @@ export function SignerPortal({
               ← Back
             </button>
             <button className="btn primary" onClick={onSign}>
-              Sign document
+              {env.role === 'countersigner' ? 'Countersign document' : 'Sign document'}
             </button>
           </div>
         </div>
@@ -203,14 +236,20 @@ export function SignerPortal({
               ? 'Fully executed'
               : env.status === 'declined'
                 ? 'Declined'
-                : `Signed — thank you, ${env.signerName}`}
+                : env.role === 'countersigner'
+                  ? `Countersigned — thank you, ${env.signerName}`
+                  : `Signed — thank you, ${env.signerName}`}
           </h2>
           <p className="muted" style={{ marginBottom: 18 }}>
             {env.status === 'completed'
-              ? 'Both parties have signed. You can download your copy below.'
+              ? env.recipients.length > 1
+                ? 'All parties have signed. You can download your copy below.'
+                : 'Both parties have signed. You can download your copy below.'
               : env.status === 'declined'
                 ? 'Your reason has been recorded. If the document is revised, you will receive a fresh signing request.'
-                : 'Your signature has been recorded and hash-sealed.'}
+                : env.recipients.some((r) => r.status === 'active')
+                  ? 'Your signature has been recorded and hash-sealed. The next recipient will be notified automatically.'
+                  : 'Your signature has been recorded and hash-sealed.'}
           </p>
           {env.status === 'completed' && (
             <button className="btn primary" onClick={() => downloadPDF(env)}>

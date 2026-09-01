@@ -115,25 +115,52 @@ export function downloadPDF(e: Envelope): void {
     });
     doc.setTextColor(0);
   };
-  drawSig(
-    e.signature,
-    M,
-    e.signerName,
-    e.signature
-      ? [`Digitally signed ${fmt(e.signature.at)}`, `sig-hash ${e.signature.hash.slice(0, 32)}`]
-      : ['Signature pending'],
-  );
-  drawSig(
-    e.countersignature,
-    M + 250,
-    `${s.signerName} — ${s.signerTitle}`,
-    e.countersignature
-      ? [
-          `Digitally countersigned ${fmt(e.countersignature.at)}`,
-          `sig-hash ${e.countersignature.hash.slice(0, 32)}`,
-        ]
-      : ['Countersignature pending'],
-  );
+
+  const recipients = e.recipients.length > 0
+    ? e.recipients.slice().sort((a, b) => a.order - b.order)
+    : [];
+  const hasCounterRole = recipients.some((r) => r.role === 'countersigner');
+  const slots = recipients.length > 0 ? recipients : [];
+
+  // Render recipient signature slots side by side (two columns).
+  slots.forEach((r, i) => {
+    const col = 2;
+    const x = M + (i % col) * 250;
+    const verb = r.role === 'countersigner' ? 'countersigned' : 'signed';
+    drawSig(
+      r.signature,
+      x,
+      r.name,
+      r.signature
+        ? [`Digitally ${verb} ${fmt(r.signature.at)}`, `sig-hash ${r.signature.hash.slice(0, 32)}`]
+        : [r.role === 'countersigner' ? 'Countersignature pending' : 'Signature pending'],
+    );
+  });
+
+  // Legacy single-recipient + company countersign fallback (no recipients list).
+  if (recipients.length === 0) {
+    drawSig(
+      e.signature,
+      M,
+      e.signerName,
+      e.signature
+        ? [`Digitally signed ${fmt(e.signature.at)}`, `sig-hash ${e.signature.hash.slice(0, 32)}`]
+        : ['Signature pending'],
+    );
+  }
+  if (!hasCounterRole) {
+    drawSig(
+      e.countersignature,
+      M + 250,
+      `${s.signerName} — ${s.signerTitle}`,
+      e.countersignature
+        ? [
+            `Digitally countersigned ${fmt(e.countersignature.at)}`,
+            `sig-hash ${e.countersignature.hash.slice(0, 32)}`,
+          ]
+        : ['Countersignature pending'],
+    );
+  }
 
   // Certificate of completion
   doc.addPage();
@@ -164,11 +191,30 @@ export function downloadPDF(e: Envelope): void {
   };
   kv('Envelope ID', e.id);
   kv('Document', e.title);
-  kv('Signer', `${e.signerName} <${e.signerEmail}>`);
-  kv('Countersignatory', `${s.signerName}, ${s.signerTitle}, ${s.company}`);
+  kv('Signing mode', e.signingMode === 'simultaneous' ? 'Simultaneous' : 'Sequential');
+  if (e.recipients.length > 0) {
+    e.recipients
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .forEach((r) => {
+        kv(
+          `Recipient ${r.order} (${r.role === 'countersigner' ? 'countersigner' : 'signer'})`,
+          `${r.name} <${r.email}>`,
+        );
+      });
+  } else {
+    kv('Signer', `${e.signerName} <${e.signerEmail}>`);
+    kv('Countersignatory', `${s.signerName}, ${s.signerTitle}, ${s.company}`);
+  }
   kv('Document SHA-256', e.docHash || '—');
-  if (e.signature) kv('Signer sig-hash', e.signature.hash);
-  if (e.countersignature) kv('Countersign sig-hash', e.countersignature.hash);
+  if (e.recipients.length > 0) {
+    e.recipients.forEach((r) => {
+      if (r.signature) kv(`${r.name} sig-hash`, r.signature.hash);
+    });
+  } else {
+    if (e.signature) kv('Signer sig-hash', e.signature.hash);
+    if (e.countersignature) kv('Countersign sig-hash', e.countersignature.hash);
+  }
   y += 10;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);

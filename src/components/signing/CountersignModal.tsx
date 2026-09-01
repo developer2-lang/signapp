@@ -28,9 +28,10 @@ export function CountersignModal({
   const [busy, setBusy] = useState(false);
 
   const confirm = async () => {
+    if (busy) return;
     const input = ref.current?.getInput();
     if (!input) {
-      pushToast('Please provide a signature');
+      pushToast('Please provide a signature.');
       return;
     }
     setBusy(true);
@@ -53,7 +54,12 @@ export function CountersignModal({
       <p className="muted" style={{ marginBottom: 12 }}>
         Signing as <strong>{db.settings.signerName}</strong>, {db.settings.signerTitle}.
       </p>
-      <SignatureCapture ref={ref} defaultName={db.settings.signerName} />
+      <SignatureCapture
+        ref={ref}
+        defaultName={db.settings.signerName}
+        envelopeId={env.id}
+        onBusy={setBusy}
+      />
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14 }}>
         <button className="btn ghost" onClick={onClose}>
           Cancel

@@ -38,8 +38,28 @@ export function EnvelopeTable({
               <strong>{x.title}</strong>
             </td>
             <td>
-              {x.signerName}
-              <div className="muted">{x.signerEmail}</div>
+              {x.recipients.length > 1 ? (
+                <div>
+                  {x.recipients
+                    .slice()
+                    .sort((a, b) => a.order - b.order)
+                    .map((r) => (
+                      <div key={r.id}>
+                        {r.name}
+                        <span className="muted">
+                          {' '}
+                          · {r.role === 'countersigner' ? 'countersigner' : 'signer'}
+                        </span>
+                        <div className="muted">{r.email}</div>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <>
+                  {x.signerName}
+                  <div className="muted">{x.signerEmail}</div>
+                </>
+              )}
             </td>
             <td>
               <StatusBadge status={isExpired(x) ? 'expired' : x.status} />

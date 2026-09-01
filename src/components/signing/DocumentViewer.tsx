@@ -33,7 +33,10 @@ function SigSlot({
 export function DocumentViewer({ env }: { env: Envelope }) {
   const db = useDb();
   const s = db.settings;
-  const sig = env.signature;
+  // Prefer the recipients list when available; fall back to the single signer.
+  const recipients = env.recipients.length > 0
+    ? env.recipients.slice().sort((a, b) => a.order - b.order)
+    : [];
   const cs = env.countersignature;
   const header = env.letterhead ? (
     <div className="lh-img">
@@ -53,12 +56,24 @@ export function DocumentViewer({ env }: { env: Envelope }) {
       {header}
       {esc(env.body)}
       <div className="sig-block">
-        <SigSlot sig={sig} who={esc(env.signerName)} title="Digitally signed" />
-        <SigSlot
-          sig={cs}
-          who={`${esc(s.signerName)} — ${esc(s.signerTitle)}`}
-          title="Digitally countersigned"
-        />
+        {recipients.map((r) => (
+          <SigSlot
+            key={r.id}
+            sig={r.signature}
+            who={esc(r.name)}
+            title={r.role === 'countersigner' ? 'Digitally countersigned' : 'Digitally signed'}
+          />
+        ))}
+        {recipients.length === 0 && (
+          <SigSlot sig={env.signature} who={esc(env.signerName)} title="Digitally signed" />
+        )}
+        {!recipients.some((r) => r.role === 'countersigner') && (
+          <SigSlot
+            sig={cs}
+            who={`${esc(s.signerName)} — ${esc(s.signerTitle)}`}
+            title="Digitally countersigned"
+          />
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { getDB, mutate } from './store';
 import { uid, token, sha256, addDays, mergeBody } from './utils';
-import type { Envelope } from '../types/envelope';
+import type { Envelope, EnvelopeRecipient } from '../types/envelope';
 import type { Contact, PersonType } from '../types/contact';
 import type { Signature } from '../types/signature';
 
@@ -48,14 +48,16 @@ interface DemoEnvOptions {
   sealed: boolean;
   signature?: Signature | null;
   counter?: Signature | null;
+  recipients?: EnvelopeRecipient[];
   events: Envelope['events'];
 }
 
 async function demoEnv(o: DemoEnvOptions): Promise<Envelope> {
   const t = getDB().templates.find((x) => x.id === o.tpl) || getDB().templates[0];
+  const eId = uid('env');
   const body = mergeBody(t.body, o.fields || {});
   const e: Envelope = {
-    id: uid('env'),
+    id: eId,
     title: `${t.name} — ${o.p.name}`,
     templateName: t.name,
     body,
@@ -77,6 +79,27 @@ async function demoEnv(o: DemoEnvOptions): Promise<Envelope> {
     signature: o.signature || null,
     countersignature: o.counter || null,
     countersignedAt: o.counter ? (o.updated || o.created) : null,
+    attachments: [],
+    recipients: o.recipients || [
+      {
+        id: eId,
+        personId: o.p.id,
+        name: o.p.name,
+        email: o.p.email,
+        role: 'signer',
+        order: 1,
+        signingOrder: 1,
+        status: (o.status === 'completed' || o.status === 'signed'
+          ? 'signed'
+          : o.status === 'declined'
+            ? 'declined'
+            : 'active') as EnvelopeRecipient['status'],
+        signature: o.signature || null,
+        signedAt: o.signature ? o.updated || o.created : null,
+        declinedAt: null,
+        declineReason: null,
+      },
+    ],
     events: o.events || [],
   };
   if (o.sealed) e.docHash = await sha256(`${body}|${e.id}|${o.p.email}`);
@@ -307,6 +330,74 @@ export async function loadDemoData(): Promise<void> {
       updated: agoISO(0, 3),
       fields: apptFields(p4, '9,60,000', 'Rupees Nine Lakh Sixty Thousand only', '01 September 2026'),
       events: [{ type: 'created', label: `Envelope drafted by ${s.signerName} (admin)`, at: agoISO(0, 3), ua: UA_DESK }],
+    }),
+  );
+
+  // Multi-recipient demo: Client -> Manager (countersigner) -> HR (final signer)
+  const clientSig = scribbleSig(91);
+  envelopes.push(
+    await demoEnv({
+      tpl: 'tpl_appt',
+      p: p4,
+      status: 'sent',
+      sealed: true,
+      created: agoISO(0, 6),
+      updated: agoISO(0, 2),
+      expiresAt: addDays(7),
+      fields: apptFields(p4, '9,60,000', 'Rupees Nine Lakh Sixty Thousand only', '01 September 2026'),
+      signature: { mode: 'draw', dataURL: clientSig, at: agoISO(0, 2), hash: '' },
+      recipients: [
+        {
+          id: uid('rcp'),
+          personId: p4.id,
+          name: p4.name,
+          email: p4.email,
+          role: 'signer',
+          order: 1,
+          signingOrder: 1,
+          status: 'signed',
+          signature: { mode: 'draw', dataURL: clientSig, at: agoISO(0, 2), hash: '' },
+          signedAt: agoISO(0, 2),
+          declinedAt: null,
+          declineReason: null,
+        },
+        {
+          id: uid('rcp'),
+          personId: null,
+          name: 'Manager Name',
+          email: 'manager@example.com',
+          role: 'countersigner',
+          order: 2,
+          signingOrder: 2,
+          status: 'active',
+          signature: null,
+          signedAt: null,
+          declinedAt: null,
+          declineReason: null,
+        },
+        {
+          id: uid('rcp'),
+          personId: null,
+          name: 'HR Name',
+          email: 'hr@example.com',
+          role: 'signer',
+          order: 3,
+          signingOrder: 3,
+          status: 'pending',
+          signature: null,
+          signedAt: null,
+          declinedAt: null,
+          declineReason: null,
+        },
+      ],
+      events: [
+        { type: 'created', label: `Envelope drafted by ${s.signerName} (admin)`, at: agoISO(0, 6), ua: UA_DESK },
+        { type: 'sent', label: `Sent to ${p4.name} <${p4.email}> · sequential signing`, at: agoISO(0, 6), ua: UA_DESK },
+        { type: 'viewed', label: 'Document opened by signer (access code entered)', at: agoISO(0, 3), ua: UA_MOBILE },
+        { type: 'consent', label: 'Consent declaration accepted by signer', at: agoISO(0, 2), ua: UA_MOBILE },
+        { type: 'signed', label: `Digitally signed by ${p4.name} (drawn signature)`, at: agoISO(0, 2), ua: UA_MOBILE },
+        { type: 'sent', label: 'Next recipient (Manager Name) notified automatically', at: agoISO(0, 2), ua: UA_DESK },
+      ],
     }),
   );
 

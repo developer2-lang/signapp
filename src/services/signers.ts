@@ -1,7 +1,8 @@
 import { supabase } from '../lib/supabaseClient';
-import type { Envelope } from '../types/envelope';
+import type { Envelope, RecipientRole } from '../types/envelope';
 import type { Signature } from '../types/signature';
 import { dbRowToEnvelope } from './envelopes';
+import { sendEnvelopeEmail, getActiveRecipient } from './email';
 import { toErrorMessage } from '../lib/utils';
 
 export interface SignerMeta {
@@ -9,10 +10,13 @@ export interface SignerMeta {
   title: string;
   signerName: string;
   signerEmail: string;
+  role: RecipientRole;
   status: Envelope['status'];
+  signingMode: Envelope['signingMode'];
   expiresAt: string | null;
   createdAt: string;
   alreadySigned: boolean;
+  isActive: boolean;
 }
 
 function friendly(err: unknown, fallback: string): Error {
@@ -27,11 +31,14 @@ function friendly(err: unknown, fallback: string): Error {
   if (msg.includes('invalid_access_code')) return new Error('Invalid access code');
   if (msg.includes('invalid_token')) return new Error('Signing link is invalid or expired');
   if (msg.includes('envelope_declined')) return new Error('This envelope has been declined');
-  if (msg.includes('already_signed')) return new Error('This envelope has already been signed');
+  if (msg.includes('already_signed')) return new Error('This step has already been signed');
   if (msg.includes('already_completed')) return new Error('This envelope is already completed');
-  if (msg.includes('client_not_signed')) return new Error('The client has not signed yet');
+  if (msg.includes('not_your_turn'))
+    return new Error('It is not your turn yet — an earlier recipient must sign first.');
+  if (msg.includes('client_not_signed')) return new Error('The recipient has not signed yet');
   if (msg.includes('already_closed')) return new Error('This envelope is already closed');
   if (msg.includes('signer_not_found')) return new Error('Signer record not found');
+  if (msg.includes('recipients_required')) return new Error('At least one recipient is required');
   if (msg.includes('not_found')) return new Error('Envelope not found');
   if (msg.includes('envelopes_status_check')) {
     return new Error('This envelope is in a state that can no longer be opened. Contact the sender.');
@@ -43,7 +50,20 @@ export async function getEnvelopeMeta(token: string): Promise<SignerMeta | null>
   const { data, error } = await supabase.rpc('get_envelope_meta', { p_token: token });
   if (error) throw friendly(error, 'Could not load envelope');
   if (!data) return null;
-  return data as SignerMeta;
+  const d = data as Record<string, unknown>;
+  return {
+    id: String(d.id ?? ''),
+    title: String(d.title ?? ''),
+    signerName: String(d.signer_name ?? ''),
+    signerEmail: String(d.signer_email ?? ''),
+    role: (d.role === 'countersigner' ? 'countersigner' : 'signer') as RecipientRole,
+    status: (d.status ?? 'draft') as Envelope['status'],
+    signingMode: (d.signing_mode ?? null) as Envelope['signingMode'],
+    expiresAt: (d.expires_at as string) ?? null,
+    createdAt: String(d.created_at ?? ''),
+    alreadySigned: Boolean(d.already_signed),
+    isActive: Boolean(d.is_active),
+  };
 }
 
 export async function unlockEnvelope(token: string, code: string): Promise<Envelope> {
@@ -84,4 +104,27 @@ export async function declineEnvelope(
   if (error) throw friendly(error, 'Could not decline document');
   if (!data) throw new Error('Could not decline document');
   return dbRowToEnvelope(data as Parameters<typeof dbRowToEnvelope>[0]);
+}
+
+/**
+ * After a recipient signs (sequential mode), notify the next active recipient.
+ * Server-side order is already enforced by sign_envelope; this only dispatches
+ * the email to whoever is now active. Returns false when nothing to send.
+ */
+export async function notifyNextRecipient(env: Envelope): Promise<boolean> {
+  // Sequential only: for simultaneous everyone is already notified.
+  if (env.signingMode !== 'sequential') return false;
+  if (env.status === 'completed' || env.status === 'declined') return false;
+
+  const active = await getActiveRecipient(env.id);
+  if (!active) return false;
+
+  // The acting signer's own recipient id (this view) — skip self unless it is a
+  // genuine next recipient (handled by active_recipient ordering). We only send
+  // when the active recipient differs from the one who just signed.
+  const selfId = env.signerId ?? env.recipients.find((r) => r.id)?.id;
+  if (active.id === selfId) return false;
+
+  const res = await sendEnvelopeEmail(env.id, active.id);
+  return res.ok;
 }
