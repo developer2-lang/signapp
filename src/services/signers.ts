@@ -126,5 +126,12 @@ export async function notifyNextRecipient(env: Envelope): Promise<boolean> {
   if (active.id === selfId) return false;
 
   const res = await sendEnvelopeEmail(env.id, active.id);
+  if (!res.ok) {
+    console.error('[signers] email to next recipient failed', res.error);
+  } else if (res.attachmentFailures && res.attachmentFailures > 0) {
+    console.warn(
+      `[signers] next recipient email sent but ${res.attachmentFailures} attachment(s) were skipped: ${(res.skippedAttachments ?? []).join(', ')}`,
+    );
+  }
   return res.ok;
 }

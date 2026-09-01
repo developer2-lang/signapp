@@ -3,6 +3,9 @@ import { supabase } from '../lib/supabaseClient';
 export interface SendEmailResult {
   ok: boolean;
   error?: string;
+  attachmentsAttached?: number;
+  attachmentFailures?: number;
+  skippedAttachments?: string[];
 }
 
 /**
@@ -20,11 +23,28 @@ export async function sendEnvelopeEmail(
   recipientId?: string,
 ): Promise<SendEmailResult> {
   const body = recipientId ? { envelopeId, recipientId } : { envelopeId };
-  const { error } = await supabase.functions.invoke('send-envelope-email', { body });
+  const { data, error } = await supabase.functions.invoke('send-envelope-email', { body });
   if (error) {
     return { ok: false, error: error.message || 'Email could not be sent' };
   }
-  return { ok: true };
+  const d = (data ?? {}) as {
+    ok?: boolean;
+    envelopeId?: string;
+    attachmentsAttached?: number;
+    attachmentFailures?: number;
+    skippedAttachments?: string[];
+  };
+  if ((d.attachmentFailures ?? 0) > 0) {
+    console.warn(
+      `[email] envelope ${envelopeId} email sent but ${d.attachmentFailures} attachment(s) could not be attached: ${(d.skippedAttachments ?? []).join(', ')}`,
+    );
+  }
+  return {
+    ok: d.ok !== false,
+    attachmentsAttached: d.attachmentsAttached ?? 0,
+    attachmentFailures: d.attachmentFailures ?? 0,
+    skippedAttachments: d.skippedAttachments ?? [],
+  };
 }
 
 /** Look up the recipient that currently needs to sign (used to notify next). */

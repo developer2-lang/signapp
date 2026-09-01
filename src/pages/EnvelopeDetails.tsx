@@ -99,7 +99,11 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
     const res = await sendEnvelopeEmail(env.id);
     setSending(false);
     if (res.ok) {
-      pushToast('Envelope sent ✓');
+      if (res.attachmentFailures && res.attachmentFailures > 0) {
+        pushToast(`Envelope sent ✓ · ${res.attachmentFailures} attachment(s) were skipped`);
+      } else {
+        pushToast('Envelope sent ✓');
+      }
       load();
       refreshEnvelopes();
     } else {
@@ -112,7 +116,11 @@ export function EnvelopeDetails({ id, onBack }: { id: string; onBack: () => void
     const res = await sendEnvelopeEmail(env.id);
     setSending(false);
     if (res.ok) {
-      pushToast('Email resent ✓');
+      if (res.attachmentFailures && res.attachmentFailures > 0) {
+        pushToast(`Email resent ✓ · ${res.attachmentFailures} attachment(s) were skipped`);
+      } else {
+        pushToast('Email resent ✓');
+      }
       load();
       refreshEnvelopes();
     } else {

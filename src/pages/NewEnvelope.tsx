@@ -265,6 +265,10 @@ export function NewEnvelope({ open, onClose }: { open: boolean; onClose: () => v
             res.error || 'Envelope saved as draft but the email could not be sent.',
           );
           pushToast('Saved as draft — email failed');
+        } else if (res.attachmentFailures && res.attachmentFailures > 0) {
+          pushToast(
+            `Envelope sent ✓ · ${res.attachmentFailures} attachment(s) were skipped`,
+          );
         } else {
           pushToast('Envelope sent ✓');
         }

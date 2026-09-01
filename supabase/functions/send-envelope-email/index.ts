@@ -317,31 +317,74 @@ function buildEmail(p: {
   return { subject, html, text };
 }
 
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+
+interface AttachmentFetchResult {
+  parts: AttachmentPart[];
+  ok: { file_name: string; mime_type: string; file_size: number }[];
+  failed: { file_name: string; reason: string }[];
+}
+
 /**
  * Fetch envelope attachments from Storage and return them as AttachmentParts
- * ready for MIME encoding. Uses the service-role key to access private files.
+ * ready for MIME encoding. Uses the service-role key to access private files
+ * (no public URLs, no leaks).
+ *
+ * Resilient by design: an attachment that is missing, unreadable, over the
+ * size limit, or NOT scoped to the current envelope is skipped with a
+ * server-side log instead of failing the whole email. Signing email delivery
+ * must never depend on an optional file.
  */
 async function fetchAttachments(
   supabase: ReturnType<typeof createClient>,
-  attachments: { storage_path: string; file_name: string; mime_type: string }[],
-): Promise<AttachmentPart[]> {
+  envelopeId: string,
+  attachments: { storage_path: string; file_name: string; mime_type: string; file_size?: number }[],
+): Promise<AttachmentFetchResult> {
   const parts: AttachmentPart[] = [];
+  const ok: AttachmentFetchResult['ok'] = [];
+  const failed: AttachmentFetchResult['failed'] = [];
+  const scopePrefix = `${envelopeId}/attachments/`;
+
   for (const att of attachments) {
+    // Defense in depth: the storage path MUST be scoped to this envelope so one
+    // envelope can never attach another envelope's file.
+    if (!att.storage_path || !att.storage_path.startsWith(scopePrefix)) {
+      const reason = 'attachment does not belong to this envelope';
+      console.error(`[send-envelope-email] skipped "${att.file_name}": ${reason}`);
+      failed.push({ file_name: att.file_name, reason });
+      continue;
+    }
+    if (att.file_size && att.file_size > MAX_ATTACHMENT_SIZE) {
+      const reason = `attachment exceeds the ${Math.round(MAX_ATTACHMENT_SIZE / 1024 / 1024)} MB size limit`;
+      console.error(`[send-envelope-email] skipped "${att.file_name}": ${reason}`);
+      failed.push({ file_name: att.file_name, reason });
+      continue;
+    }
     const { data, error } = await supabase.storage
       .from('attachments')
       .download(att.storage_path);
     if (error || !data) {
-      // Never send a partial email missing an attachment we promised.
-      throw new Error(`Failed to load attachment "${att.file_name}" for email dispatch`);
+      const reason = 'file missing or unreadable in storage';
+      console.error(
+        `[send-envelope-email] skipped "${att.file_name}": ${reason} (${error?.message ?? 'not found'})`,
+      );
+      failed.push({ file_name: att.file_name, reason });
+      continue;
     }
-    const buf = await data.arrayBuffer();
-    parts.push({
-      filename: att.file_name,
-      contentType: att.mime_type,
-      data: new Uint8Array(buf),
-    });
+    try {
+      const buf = await data.arrayBuffer();
+      parts.push({
+        filename: att.file_name,
+        contentType: att.mime_type,
+        data: new Uint8Array(buf),
+      });
+      ok.push({ file_name: att.file_name, mime_type: att.mime_type, file_size: att.file_size ?? 0 });
+    } catch (readErr) {
+      console.error(`[send-envelope-email] skipped "${att.file_name}": could not read file`, readErr);
+      failed.push({ file_name: att.file_name, reason: 'could not read attachment contents' });
+    }
   }
-  return parts;
+  return { parts, ok, failed };
 }
 
 Deno.serve(async (req: Request) => {
@@ -432,16 +475,36 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Fetch envelope attachments (metadata + file data from Storage).
-    const { data: attRows } = await supabase
+    // Fetch envelope attachments (metadata + file data from Storage). Every row
+    // is scoped to the envelope; the file bytes are pulled securely from the
+    // PRIVATE bucket with the service-role key — never via a public URL.
+    const { data: attRows, error: attErr } = await supabase
       .from('envelope_attachments')
       .select('storage_path, file_name, mime_type, file_size')
       .eq('envelope_id', envelopeId);
 
-    const attachmentMeta = attRows ?? [];
-    const attachmentParts = attachmentMeta.length > 0
-      ? await fetchAttachments(supabase, attachmentMeta)
-      : undefined;
+    if (attErr) {
+      // e.g. the metadata table is missing — never let this block the email.
+      console.error('[send-envelope-email] attachment metadata query failed', attErr);
+    }
+
+    const allAttachmentMeta = attRows ?? [];
+    let attachmentParts: AttachmentPart[] | undefined;
+    let attachmentOk: { file_name: string; mime_type: string; file_size: number }[] = [];
+    const skippedAttachments: string[] = [];
+
+    if (allAttachmentMeta.length > 0) {
+      const fetched = await fetchAttachments(supabase, envelopeId, allAttachmentMeta);
+      attachmentParts = fetched.parts.length > 0 ? fetched.parts : undefined;
+      attachmentOk = fetched.ok;
+      if (fetched.failed.length > 0) {
+        const skipped = fetched.failed.map((f) => f.file_name).join(', ');
+        console.error(
+          `[send-envelope-email] ${fetched.failed.length} of ${allAttachmentMeta.length} attachment(s) could not be included: ${skipped}`,
+        );
+        skippedAttachments.push(...fetched.failed.map((f) => f.file_name));
+      }
+    }
 
     const appUrl = (Deno.env.get('APP_URL') ?? '').replace(/\/$/, '');
     const signingUrl = `${appUrl}/sign/${signingToken}`;
@@ -451,7 +514,7 @@ Deno.serve(async (req: Request) => {
       documentName: env.title ?? env.template_name ?? 'Document',
       signingUrl,
       accessCode,
-      attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined,
+      attachments: attachmentOk.length > 0 ? attachmentOk : undefined,
     });
 
     await sendSmtpMail(smtpConfig(), email, mail.subject, mail.html, mail.text, attachmentParts);
@@ -470,9 +533,18 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, envelopeId: env.id }), {
-      headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        envelopeId: env.id,
+        attachmentsAttached: attachmentParts?.length ?? 0,
+        attachmentFailures: skippedAttachments.length,
+        ...(skippedAttachments.length > 0 ? { skippedAttachments } : {}),
+      }),
+      {
+        headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+      },
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('send-envelope-email error', message);
