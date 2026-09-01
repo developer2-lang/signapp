@@ -100,6 +100,47 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return lines.join('\r\n');
 }
 
+/** Convert a Blob to Uint8Array, with fallback for runtimes where arrayBuffer() is unavailable. */
+async function blobToUint8Array(blob: Blob): Promise<Uint8Array> {
+  // Standard path: use Blob.arrayBuffer() if available.
+  if (typeof blob.arrayBuffer === 'function') {
+    const buf = await blob.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+  // Fallback: read the Blob stream manually.
+  const reader = blob.stream().getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLen = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    totalLen += value.length;
+  }
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+/**
+ * Write all bytes to a TLS connection, handling partial writes.
+ * Some TLS implementations may not send every byte in a single write() call.
+ */
+async function writeAll(conn: Deno.TlsConn, data: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = await conn.write(data.subarray(offset));
+    if (written === 0) {
+      throw new Error('SMTP connection closed during write');
+    }
+    offset += written;
+  }
+}
+
 interface AttachmentPart {
   filename: string;
   contentType: string;
@@ -175,24 +216,37 @@ async function sendSmtpMail(
     // Headers are terminated by an empty line per RFC 5322.
     const headers = headerLines.join('\r\n') + '\r\n\r\n';
 
-    let body = headers;
-
+    // Write the MIME body in chunks to avoid building one enormous string and to
+    // guarantee every byte reaches the wire even for large PDF attachments.
     if (hasAttachments) {
-      // MIME multipart: HTML body as first part, then each attachment.
-      body += `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${html}`;
+      // 1. Headers + HTML body part
+      const htmlPart =
+        `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${html}`;
+      await writeAll(conn, enc.encode(headers + htmlPart));
+      console.log(`[send-envelope-email] wrote headers + HTML part (${email})`);
 
+      // 2. Each attachment as a separate MIME part
+      let idx = 0;
       for (const att of attachments) {
+        idx++;
+        console.log(
+          `[send-envelope-email] encoding attachment ${idx}/${attachments.length}: ${att.filename} (${att.contentType}, ${att.data.length} bytes)`,
+        );
         const encoded = uint8ToBase64(att.data);
-        body += `\r\n--${boundary}\r\nContent-Type: ${att.contentType}; name="${att.filename}"\r\nContent-Disposition: attachment; filename="${att.filename}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${encoded}`;
+        const part =
+          `\r\n--${boundary}\r\nContent-Type: ${att.contentType}; name="${att.filename}"\r\nContent-Disposition: attachment; filename="${att.filename}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${encoded}`;
+        await writeAll(conn, enc.encode(part));
+        console.log(`[send-envelope-email] wrote attachment ${idx}/${attachments.length}: ${att.filename}`);
       }
 
-      body += `\r\n--${boundary}--\r\n`;
+      // 3. Closing boundary + SMTP terminator
+      await writeAll(conn, enc.encode(`\r\n--${boundary}--\r\n`));
+      await writeAll(conn, enc.encode('\r\n.\r\n'));
     } else {
-      body += html;
+      // No attachments: single-part HTML email.
+      const fullBody = headers + html + '\r\n.\r\n';
+      await writeAll(conn, enc.encode(fullBody));
     }
-
-    body += '\r\n.\r\n';
-    await conn.write(enc.encode(body));
     await readResponse();
     await send('QUIT', '221');
   } finally {
@@ -372,11 +426,14 @@ async function fetchAttachments(
       continue;
     }
     try {
-      const buf = await data.arrayBuffer();
+      const bytes = await blobToUint8Array(data);
+      console.log(
+        `[send-envelope-email] downloaded "${att.file_name}" — ${bytes.length} bytes`,
+      );
       parts.push({
         filename: att.file_name,
         contentType: att.mime_type,
-        data: new Uint8Array(buf),
+        data: bytes,
       });
       ok.push({ file_name: att.file_name, mime_type: att.mime_type, file_size: att.file_size ?? 0 });
     } catch (readErr) {
@@ -478,6 +535,7 @@ Deno.serve(async (req: Request) => {
     // Fetch envelope attachments (metadata + file data from Storage). Every row
     // is scoped to the envelope; the file bytes are pulled securely from the
     // PRIVATE bucket with the service-role key — never via a public URL.
+    console.log(`[send-envelope-email] fetching attachments for envelope ${envelopeId}`);
     const { data: attRows, error: attErr } = await supabase
       .from('envelope_attachments')
       .select('storage_path, file_name, mime_type, file_size')
@@ -489,6 +547,9 @@ Deno.serve(async (req: Request) => {
     }
 
     const allAttachmentMeta = attRows ?? [];
+    console.log(
+      `[send-envelope-email] found ${allAttachmentMeta.length} attachment metadata row(s) for envelope ${envelopeId}`,
+    );
     let attachmentParts: AttachmentPart[] | undefined;
     let attachmentOk: { file_name: string; mime_type: string; file_size: number }[] = [];
     const skippedAttachments: string[] = [];
@@ -508,6 +569,9 @@ Deno.serve(async (req: Request) => {
 
     const appUrl = (Deno.env.get('APP_URL') ?? '').replace(/\/$/, '');
     const signingUrl = `${appUrl}/sign/${signingToken}`;
+    console.log(
+      `[send-envelope-email] sending email to ${email} (${role}) — ${attachmentParts?.length ?? 0} attachment(s) will be included, ${skippedAttachments.length} skipped`,
+    );
     const mail = buildEmail({
       name,
       role,
