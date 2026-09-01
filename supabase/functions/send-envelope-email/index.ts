@@ -157,6 +157,7 @@ async function sendSmtpMail(
   attachments?: AttachmentPart[],
 ) {
   const conn = await Deno.connectTls({ hostname: cfg.host, port: cfg.port });
+  console.log(`[send-envelope-email] SMTP connected to ${cfg.host}:${cfg.port}`);
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const buf = new Uint8Array(8192);
@@ -195,12 +196,16 @@ async function sendSmtpMail(
     await send(`MAIL FROM:<${cfg.from}>`, '250');
     await send(`RCPT TO:<${to}>`, '250');
     await send('DATA', '354');
+    console.log(`[send-envelope-email] SMTP connected & authenticated, DATA accepted — sending to ${to}`);
 
     const date = new Date().toUTCString();
     const msgId = `<${crypto.randomUUID()}@iuova-sign>`;
     const boundary = `----=_Part_${crypto.randomUUID().replace(/-/g, '')}`;
 
     const hasAttachments = attachments && attachments.length > 0;
+    console.log(
+      `[send-envelope-email] building MIME message — hasAttachments=${hasAttachments}, attachments=${attachments?.length ?? 0}, to=${to}`,
+    );
 
     const headerLines = [
       `Date: ${date}`,
@@ -223,7 +228,7 @@ async function sendSmtpMail(
       const htmlPart =
         `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${html}`;
       await writeAll(conn, enc.encode(headers + htmlPart));
-      console.log(`[send-envelope-email] wrote headers + HTML part (${email})`);
+      console.log(`[send-envelope-email] wrote headers + HTML part (${to})`);
 
       // 2. Each attachment as a separate MIME part
       let idx = 0;
@@ -248,7 +253,9 @@ async function sendSmtpMail(
       await writeAll(conn, enc.encode(fullBody));
     }
     await readResponse();
+    console.log(`[send-envelope-email] email payload accepted by SMTP server (250) — to ${to}`);
     await send('QUIT', '221');
+    console.log(`[send-envelope-email] SMTP QUIT acknowledged — email fully sent to ${to}`);
   } finally {
     try {
       conn.close();
@@ -450,9 +457,11 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    console.log(`[send-envelope-email] >>> request received — method=${req.method}`);
     const body = await req.json().catch(() => ({}));
     const envelopeId: string | undefined = body?.envelopeId;
     const recipientId: string | undefined = body?.recipientId;
+    console.log(`[send-envelope-email] envelopeId=${envelopeId ?? '(none)'} recipientId=${recipientId ?? '(none)'}`);
     if (!envelopeId) {
       return new Response(JSON.stringify({ ok: false, error: 'envelopeId is required' }), {
         status: 400,
@@ -465,6 +474,7 @@ Deno.serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
+    console.log(`[send-envelope-email] querying envelope ${envelopeId}`);
     const { data: env, error: envErr } = await supabase
       .from('envelopes')
       .select('id, title, template_name, signer_name, signer_email, signing_token, access_code, status')
@@ -472,11 +482,13 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (envErr || !env) {
+      console.error(`[send-envelope-email] envelope query failed: ${envErr?.message ?? 'not found'}`);
       return new Response(JSON.stringify({ ok: false, error: 'envelope not found' }), {
         status: 404,
         headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
       });
     }
+    console.log(`[send-envelope-email] envelope found — title="${env.title}" status=${env.status}`);
 
     // Resolve which recipient to notify. If a specific recipientId was provided
     // (e.g. the next recipient in sequence), use that one; otherwise the first
@@ -491,6 +503,7 @@ Deno.serve(async (req: Request) => {
     } | null = null;
 
     if (recipientId) {
+      console.log(`[send-envelope-email] looking up specific recipient ${recipientId}`);
       const { data, error } = await supabase
         .from('envelope_signers')
         .select('id, signer_name, signer_email, role, signing_token, access_code')
@@ -503,6 +516,7 @@ Deno.serve(async (req: Request) => {
         recipient = data as typeof recipient;
       }
     } else {
+      console.log(`[send-envelope-email] looking up first active recipient for envelope ${envelopeId}`);
       const { data, error } = await supabase
         .from('envelope_signers')
         .select('id, signer_name, signer_email, role, signing_token, access_code')
@@ -524,6 +538,8 @@ Deno.serve(async (req: Request) => {
     const role = recipient?.role ?? 'signer';
     const signingToken = recipient?.signing_token ?? env.signing_token ?? '';
     const accessCode = recipient?.access_code ?? env.access_code ?? '';
+
+    console.log(`[send-envelope-email] recipient resolved — id=${recipient?.id ?? '(fallback)'} name="${name}" email="${email}" role="${role}"`);
 
     if (!email || !signingToken) {
       return new Response(JSON.stringify({ ok: false, error: 'recipient has no email or signing link' }), {
@@ -597,6 +613,8 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    console.log(`[send-envelope-email] >>> email sent successfully — envelope=${env.id}, recipient=${recipient?.id ?? '(fallback)'}, attachmentsAttached=${attachmentParts?.length ?? 0}, skipped=${skippedAttachments.length}`);
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -611,7 +629,12 @@ Deno.serve(async (req: Request) => {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error('send-envelope-email error', message);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error('[send-envelope-email] ERROR — request failed', err);
+    console.error('[send-envelope-email] error message:', message);
+    if (stack) {
+      console.error('[send-envelope-email] error stack:', stack);
+    }
     return new Response(JSON.stringify({ ok: false, error: message }), {
       status: 500,
       headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },

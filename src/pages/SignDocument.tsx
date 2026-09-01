@@ -87,10 +87,15 @@ export function SignerPortal({
       const e = await unlockEnvelope(token, c);
       setCode(c);
       setEnv(e);
-      if (e.status === 'completed' || e.status === 'signed' || e.status === 'declined') {
+      if (e.status === 'completed' || e.status === 'declined') {
         setStage('done');
       } else {
-        setStage('doc');
+        const self = e.recipients.find((r) => r.id === e.signerId);
+        if (self?.status === 'signed') {
+          setStage('done');
+        } else {
+          setStage('doc');
+        }
       }
     } catch (err) {
       console.error('[SignDocument] unlockEnvelope failed', err);
