@@ -78,8 +78,9 @@ export function Settings() {
 
   return (
     <>
-      <div className="card" style={{ maxWidth: 560 }}>
-        <h3 style={{ marginBottom: 16 }}>Company signatory</h3>
+    <div className="settings-page">
+      <div className="card settings-card">
+        <h3 className="settings-card-title">Company signatory</h3>
         <Field label="Countersigning authority (name)">
           <input value={signerName} onChange={(e) => setSignerName(e.target.value)} />
         </Field>
@@ -133,8 +134,8 @@ export function Settings() {
         </button>
       </div>
 
-      <div className="card" style={{ maxWidth: 560, marginTop: 16 }}>
-        <h3 style={{ marginBottom: 10 }}>Security</h3>
+      <div className="card settings-card">
+        <h3 className="settings-card-title">Security</h3>
         <p className="muted" style={{ marginBottom: 12 }}>
           A PIN gates the Admin portal — protecting salary figures, NDAs and signatures from anyone who
           opens the app. The Signer portal remains accessible without it. Honest caveat: this deters
@@ -180,8 +181,8 @@ export function Settings() {
         )}
       </div>
 
-      <div className="card" style={{ maxWidth: 560, marginTop: 16 }}>
-        <h3 style={{ marginBottom: 10 }}>Data</h3>
+      <div className="card settings-card">
+        <h3 className="settings-card-title">Data</h3>
         <p className="muted" style={{ marginBottom: 12 }}>
           Everything is stored in this app's persistent storage. Export a JSON backup regularly.
         </p>
@@ -239,6 +240,8 @@ export function Settings() {
             Erase all data
           </button>
         </div>
+      </div>
+
       </div>
 
       <Modal open={pinSetupMode !== null} onClose={() => setPinSetupMode(null)}>
