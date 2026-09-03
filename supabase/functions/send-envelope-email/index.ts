@@ -601,6 +601,31 @@ Deno.serve(async (req: Request) => {
         );
       }
 
+      // Upload the final signed PDF to Storage (with the service-role key)
+      // so the completion email's "View completed document" button can open
+      // it directly. The upload MUST succeed before the email is sent — a
+      // broken button is worse than a delayed email.
+      const SIGNED_PDF_BUCKET = 'signed-pdf';
+      const { error: pdfUpErr } = await supabase.storage
+        .from(SIGNED_PDF_BUCKET)
+        .upload(`${envelopeId}/final.pdf`, signedPdfBytes, {
+          contentType: 'application/pdf',
+          upsert: true,
+        });
+      if (pdfUpErr) {
+        console.error(
+          `[send-envelope-email] upload final signed PDF to storage failed for envelope ${envelopeId}`,
+          pdfUpErr,
+        );
+        return new Response(
+          JSON.stringify({ ok: false, error: `storage upload failed: ${pdfUpErr.message}` }),
+          { status: 500, headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' } },
+        );
+      }
+      console.log(
+        `[send-envelope-email] final signed PDF uploaded to storage for envelope ${envelopeId} (${signedPdfBytes.length} bytes)`,
+      );
+
       // Resolve each completed recipient's name + email from the DB.
       const { data: signers, error: signersErr } = await supabase
         .from('envelope_signers')

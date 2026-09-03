@@ -185,29 +185,12 @@ export async function sendCompletionAfterSign(
   const pdfBytes = getPDFBytes(env);
   const pdfBase64 = toBase64(pdfBytes);
 
-  // Persist the final signed PDF to Storage so the completion email's button
-  // can open it directly with Content-Type: application/pdf (served by the
-  // serve-signed-pdf Edge Function). Upload failures must not block the email
-  // (the PDF is still attached), so they are logged and swallowed.
-  try {
-    const { error: upErr } = await supabase.storage
-      .from(SIGNED_PDF_BUCKET)
-      .upload(`${env.id}/final.pdf`, new Uint8Array(pdfBytes), {
-        contentType: 'application/pdf',
-        upsert: true,
-      });
-    if (upErr) {
-      console.error('[signers] upload final signed PDF to storage failed', upErr);
-    } else {
-      console.log(`[signers] final signed PDF stored for envelope ${env.id}`);
-    }
-  } catch (upErr) {
-    console.error('[signers] upload final signed PDF to storage threw', upErr);
-  }
-
   const recipientIds = signed.map((r) => r.id);
   const documentName = env.title || env.templateName || 'Document';
 
+  // The Edge Function now handles both the storage upload (with the service-
+  // role key) and the email dispatch. If the upload fails the email is NOT
+  // sent, so the "View completed document" button is never broken.
   const res = await sendCompletionEmails(
     env.id,
     recipientIds,
@@ -219,9 +202,6 @@ export async function sendCompletionAfterSign(
   }
   return res.ok;
 }
-
-/** Private Storage bucket that holds the final signed PDF per envelope. */
-const SIGNED_PDF_BUCKET = 'signed-pdf';
 
 function toBase64(bytes: Uint8Array): string {
   let bin = '';
