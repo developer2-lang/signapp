@@ -68,3 +68,43 @@ export async function getActiveRecipient(
   }
   return (data as ActiveRecipient) ?? null;
 }
+
+/**
+ * Send the final completion email with the signed PDF attachment to all
+ * completed recipients. Called when the envelope status becomes 'completed'.
+ */
+export async function sendCompletionEmails(
+  envelopeId: string,
+  recipientIds: string[],
+  documentName: string,
+  signedPdfBase64: string,
+): Promise<SendEmailResult> {
+  const body = {
+    completionMode: true,
+    envelopeId,
+    recipientIds,
+    documentName,
+    signedPdf: signedPdfBase64,
+  };
+  const { data, error } = await supabase.functions.invoke('send-envelope-email', { body });
+  if (error) {
+    return { ok: false, error: error.message || 'Completion email could not be sent' };
+  }
+  const d = (data ?? {}) as {
+    ok?: boolean;
+    attachmentsAttached?: number;
+    attachmentFailures?: number;
+    skippedAttachments?: string[];
+  };
+  if ((d.attachmentFailures ?? 0) > 0) {
+    console.warn(
+      `[email] completion emails sent but ${d.attachmentFailures} attachment(s) could not be attached`,
+    );
+  }
+  return {
+    ok: d.ok !== false,
+    attachmentsAttached: d.attachmentsAttached ?? 0,
+    attachmentFailures: d.attachmentFailures ?? 0,
+    skippedAttachments: d.skippedAttachments ?? [],
+  };
+}

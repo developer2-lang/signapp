@@ -40,6 +40,14 @@ const ROLE_LABEL: Record<RecipientRole, string> = {
   countersigner: 'Countersigner',
 };
 
+/** Default two-recipient workflow: a Signer followed by a Countersigner. */
+function defaultRecipients(): RecipientDraft[] {
+  return [
+    { key: nextKey(), personId: null, name: '', email: '', role: 'signer' },
+    { key: nextKey(), personId: null, name: '', email: '', role: 'countersigner' },
+  ];
+}
+
 export function NewEnvelope({ open, onClose }: { open: boolean; onClose: () => void }) {
   const db = useDb();
   const [step, setStep] = useState(1);
@@ -67,7 +75,7 @@ export function NewEnvelope({ open, onClose }: { open: boolean; onClose: () => v
       setEmailError(null);
       setFormError(null);
       setSending(false);
-      setRecipients([]);
+      setRecipients(defaultRecipients());
       setSigningMode('sequential');
       setAttachments([]);
       setAttachmentError(null);
@@ -561,7 +569,7 @@ export function NewEnvelope({ open, onClose }: { open: boolean; onClose: () => v
 
               <div style={{ marginBottom: 14 }}>
                 <button className="btn ghost" onClick={() => addRecipient()}>
-                  ＋ Add recipient
+                  ＋ Add recipient{recipients.length >= 2 ? ' (optional)' : ''}
                 </button>
                 {people.length > 0 && (
                   <select

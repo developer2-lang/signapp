@@ -2,7 +2,8 @@ import { supabase } from '../lib/supabaseClient';
 import type { Envelope, RecipientRole } from '../types/envelope';
 import type { Signature } from '../types/signature';
 import { dbRowToEnvelope } from './envelopes';
-import { sendEnvelopeEmail, getActiveRecipient } from './email';
+import { sendEnvelopeEmail, getActiveRecipient, sendCompletionEmails } from './email';
+import { getPDFBytes } from '../lib/pdf';
 import { toErrorMessage } from '../lib/utils';
 
 export interface SignerMeta {
@@ -134,4 +135,70 @@ export async function notifyNextRecipient(env: Envelope): Promise<boolean> {
     );
   }
   return res.ok;
+}
+
+/**
+ * Guard against duplicate completion emails by atomically claiming a flag on
+ * the envelope. Returns true if THIS caller wins the claim (first time) or
+ * false if it was already claimed (duplicate attempt / retry / refresh).
+ */
+async function claimCompletionEmail(envelopeId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('claim_completion_email', {
+    p_id: envelopeId,
+  });
+  if (error) {
+    console.error('[signers] claim_completion_email failed', error);
+    return false;
+  }
+  // The RPC returns true only if it flipped completion_email_sent from false to
+  // true on this call (i.e. this is the first and only claim).
+  return data === true;
+}
+
+/**
+ * After a recipient signs, if the envelope is now 'completed', send the final
+ * completion email (with the final signed PDF attached) to every completed
+ * recipient at their own email address. A server-side claim flag guarantees
+ * the email is dispatched only once even if the signing request is retried or
+ * the page is refreshed.
+ */
+export async function sendCompletionAfterSign(
+  env: Envelope,
+): Promise<boolean> {
+  if (env.status !== 'completed') return false;
+
+  const signed = env.recipients.filter((r) => r.status === 'signed');
+  if (signed.length === 0) return false;
+
+  // Atomically claim the right to send. If another attempt already claimed it
+  // (refresh / retry), do not send a duplicate completion email.
+  const claimed = await claimCompletionEmail(env.id);
+  if (!claimed) {
+    console.log('[signers] completion email already sent — skipping duplicate');
+    return false;
+  }
+
+  // Build the final signed PDF (contains both signatures) and send to every
+  // completed recipient as a real MIME email attachment.
+  const pdfBytes = getPDFBytes(env);
+  const pdfBase64 = toBase64(pdfBytes);
+  const recipientIds = signed.map((r) => r.id);
+  const documentName = env.title || env.templateName || 'Document';
+
+  const res = await sendCompletionEmails(
+    env.id,
+    recipientIds,
+    documentName,
+    pdfBase64,
+  );
+  if (!res.ok) {
+    console.error('[signers] completion email failed', res.error);
+  }
+  return res.ok;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin);
 }

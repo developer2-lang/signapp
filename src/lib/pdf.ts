@@ -1,16 +1,18 @@
 import { jsPDF } from 'jspdf';
 import { getDB } from './store';
-import { fmt } from './utils';
+import { fmt } from '../lib/utils';
 import type { Envelope } from '../types/envelope';
+import type { AppDB } from '../types/db';
 import { pushToast } from './toast';
 
+type CompanySettings = AppDB['settings'];
+
 /**
- * Generate and download the final signed PDF for a completed (or in-progress)
- * envelope. The data is passed in (the envelope now lives in Supabase); the
- * company settings are still read from the local store.
+ * Core PDF generation shared between browser download and email attachment.
+ * Returns a jsPDF document containing the document body, signature slots,
+ * and a certificate of completion page.
  */
-export function downloadPDF(e: Envelope): void {
-  const s = getDB().settings;
+function generatePDFDoc(e: Envelope, s: CompanySettings): jsPDF {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const W = 595;
   const M = 56;
@@ -258,6 +260,27 @@ export function downloadPDF(e: Envelope): void {
     M,
     y,
   );
+  return doc;
+}
+
+/**
+ * Generate and download the final signed PDF for a completed (or in-progress)
+ * envelope. The data is passed in (the envelope now lives in Supabase); the
+ * company settings are still read from the local store.
+ */
+export function downloadPDF(e: Envelope): void {
+  const s = getDB().settings;
+  const doc = generatePDFDoc(e, s);
   doc.save(`${e.title.replace(/[^\w\- ]/g, '')}.pdf`);
   pushToast('PDF downloaded');
+}
+
+/**
+ * Generate the final signed PDF and return its raw bytes as a Uint8Array.
+ * Used by the completion email flow to attach the PDF to emails.
+ */
+export function getPDFBytes(e: Envelope): Uint8Array {
+  const s = getDB().settings;
+  const doc = generatePDFDoc(e, s);
+  return new Uint8Array(doc.output('arraybuffer'));
 }

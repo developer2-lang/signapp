@@ -378,6 +378,64 @@ function buildEmail(p: {
   return { subject, html, text };
 }
 
+function buildCompletionEmail(p: {
+  name: string;
+  documentName: string;
+  viewUrl: string;
+}): { subject: string; html: string; text: string } {
+  const subject = `Completed: ${p.documentName} has been signed by all recipients`;
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1b2330;">
+    <div style="max-width:560px;margin:0 auto;padding:28px 20px;">
+      <div style="background:#ffffff;border:1px solid #e6e8ee;border-radius:12px;overflow:hidden;">
+        <div style="background:#0b3fb8;color:#fff;padding:20px 24px;">
+          <div style="font-weight:700;font-size:18px;letter-spacing:.04em;">IUOVA SIGN</div>
+          <div style="font-size:12px;opacity:.85;">Digital Execution Desk</div>
+        </div>
+        <div style="padding:24px;">
+          <p style="margin:0 0 14px;font-size:15px;">Hello ${escapeHtml(p.name)},</p>
+          <p style="margin:0 0 14px;font-size:14px;line-height:1.5;color:#3a4250;">
+            Your document has been <strong>completed and signed by all recipients</strong>.
+          </p>
+          <p style="margin:0 0 18px;font-size:14px;line-height:1.5;">
+            <strong>Document:</strong> ${escapeHtml(p.documentName)}
+          </p>
+          <p style="margin:0 0 18px;font-size:14px;line-height:1.5;">
+            A signed copy of the completed document is attached to this email. You can also view it
+            online using the button below.
+          </p>
+          <div style="text-align:center;margin:22px 0;">
+            <a href="${p.viewUrl}"
+               style="display:inline-block;background:#0b3fb8;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 26px;border-radius:8px;">
+              View completed document
+            </a>
+          </div>
+          <p style="margin:14px 0 0;font-size:12px;color:#7a8597;">
+            The attached PDF is the final signed document and can be downloaded directly from your
+            email client.
+          </p>
+        </div>
+        <div style="background:#f4f5f7;padding:16px 24px;font-size:11px;color:#8a93a3;border-top:1px solid #e6e8ee;">
+          Regards,<br/>IUOVA SIGN &middot; Digital Execution Desk
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+  const text =
+    `Hello ${p.name},\n\n` +
+    `Your document has been completed and signed by all recipients.\n\n` +
+    `Document: ${p.documentName}\n\n` +
+    `A signed copy of the completed document is attached to this email.\n\n` +
+    `View the completed document online:\n${p.viewUrl}\n\n` +
+    `Regards,\nIUOVA SIGN\nDigital Execution Desk`;
+
+  return { subject, html, text };
+}
+
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 
 interface AttachmentFetchResult {
@@ -489,6 +547,112 @@ Deno.serve(async (req: Request) => {
       });
     }
     console.log(`[send-envelope-email] envelope found — title="${env.title}" status=${env.status}`);
+
+    // -------------------------------------------------------------------------
+    // COMPLETION MODE — send the final signed PDF to every completed recipient.
+    // Triggered by the UI after the envelope becomes 'completed'. Re-uses the
+    // same MIME attachment machinery. The job is idempotent by design: the
+    // caller's claim flag guarantees a single dispatch.
+    // -------------------------------------------------------------------------
+    if (body?.completionMode) {
+      console.log(`[send-envelope-email] >>> COMPLETION email requested for envelope ${envelopeId}`);
+      const recipientIds: string[] = Array.isArray(body?.recipientIds)
+        ? body.recipientIds.filter((x: unknown): x is string => typeof x === 'string' && x.length > 0)
+        : [];
+      const documentName: string =
+        body?.documentName || env.title || env.template_name || 'Document';
+      const signedPdfB64: string =
+        typeof body?.signedPdf === 'string' ? body.signedPdf : '';
+
+      if (recipientIds.length === 0) {
+        return new Response(JSON.stringify({ ok: false, error: 'no recipients to notify' }), {
+          status: 400,
+          headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+        });
+      }
+      if (!signedPdfB64) {
+        return new Response(JSON.stringify({ ok: false, error: 'signedPdf is required' }), {
+          status: 400,
+          headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Decode the signed PDF provided by the client.
+      let signedPdfBytes: Uint8Array;
+      try {
+        const bin = atob(signedPdfB64);
+        signedPdfBytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) signedPdfBytes[i] = bin.charCodeAt(i);
+      } catch (e) {
+        console.error('[send-envelope-email] could not decode signed PDF', e);
+        return new Response(JSON.stringify({ ok: false, error: 'invalid signedPdf payload' }), {
+          status: 400,
+          headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (signedPdfBytes.length > MAX_ATTACHMENT_SIZE) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: `signed PDF exceeds the ${Math.round(MAX_ATTACHMENT_SIZE / 1024 / 1024)} MB size limit`,
+          }),
+          { status: 413, headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // Resolve each completed recipient's name + email from the DB.
+      const { data: signers, error: signersErr } = await supabase
+        .from('envelope_signers')
+        .select('id, signer_name, signer_email')
+        .eq('envelope_id', envelopeId)
+        .in('id', recipientIds);
+
+      if (signersErr) {
+        return new Response(JSON.stringify({ ok: false, error: 'recipient lookup failed' }), {
+          status: 500,
+          headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+        });
+      }
+      if (!signers || signers.length === 0) {
+        return new Response(JSON.stringify({ ok: false, error: 'no matching recipients' }), {
+          status: 404,
+          headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' },
+        });
+      }
+
+      const appUrl = (Deno.env.get('APP_URL') ?? '').replace(/\/$/, '');
+      const pdfFilename = `${(env.title ?? 'Document').replace(/[^\w\- ]/g, '')}.pdf`;
+      const attachment: AttachmentPart = {
+        filename: pdfFilename,
+        contentType: 'application/pdf',
+        data: signedPdfBytes,
+      };
+
+      let sentCount = 0;
+      for (const s of signers) {
+        const name = s.signer_name || 'Signer';
+        const email = s.signer_email;
+        if (!email) {
+          console.error(`[send-envelope-email] completion recipient ${s.id} has no email — skipping`);
+          continue;
+        }
+        const viewUrl = `${appUrl}/sign/${env.signing_token ?? ''}`;
+        const mail = buildCompletionEmail({ name, documentName, viewUrl });
+        try {
+          await sendSmtpMail(smtpConfig(), email, mail.subject, mail.html, mail.text, [attachment]);
+          sentCount++;
+          console.log(`[send-envelope-email] completion email sent to ${email} with signed PDF`);
+        } catch (err) {
+          console.error(`[send-envelope-email] completion email failed for ${email}`, err);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ ok: true, envelopeId, emailsSent: sentCount }),
+        { headers: { ...corsHeadersFor(req), 'Content-Type': 'application/json' } },
+      );
+    }
 
     // Resolve which recipient to notify. If a specific recipientId was provided
     // (e.g. the next recipient in sequence), use that one; otherwise the first

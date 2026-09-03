@@ -6,6 +6,7 @@ import {
   signEnvelope,
   declineEnvelope,
   notifyNextRecipient,
+  sendCompletionAfterSign,
   type SignerMeta,
 } from '../services/signers';
 import { finalizeSignature } from '../services/signatures';
@@ -121,10 +122,18 @@ export function SignerPortal({
       setEnv(updated);
       setStage('done');
       setConsent(false);
-      // In sequential mode, notify the next active recipient automatically.
-      notifyNextRecipient(updated).catch((err) => {
-        console.error('[SignDocument] notify next recipient failed', err);
-      });
+      // When the envelope just completed, email the final signed PDF to all
+      // completed recipients. Otherwise (sequential mode) notify the next
+      // active recipient automatically.
+      if (updated.status === 'completed') {
+        sendCompletionAfterSign(updated).catch((err) => {
+          console.error('[SignDocument] completion email failed', err);
+        });
+      } else {
+        notifyNextRecipient(updated).catch((err) => {
+          console.error('[SignDocument] notify next recipient failed', err);
+        });
+      }
       const verb = updated.role === 'countersigner' ? 'Countersigned' : 'Document signed';
       pushToast(`${verb} ✓`);
     } catch (err) {
