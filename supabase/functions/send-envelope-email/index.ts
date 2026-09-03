@@ -629,6 +629,14 @@ Deno.serve(async (req: Request) => {
         data: signedPdfBytes,
       };
 
+      // The "View completed document" button opens the final signed PDF DIRECTLY
+      // (Content-Type: application/pdf) via the serve-signed-pdf Edge Function,
+      // which serves the stored PDF by signing token. It deliberately does NOT
+      // point at the signing page (/sign/...), an access-code page, or any
+      // intermediate HTML document page.
+      const supabaseUrl = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
+      const viewUrl = `${supabaseUrl}/functions/v1/serve-signed-pdf?token=${encodeURIComponent(env.signing_token ?? '')}`;
+
       let sentCount = 0;
       for (const s of signers) {
         const name = s.signer_name || 'Signer';
@@ -637,7 +645,6 @@ Deno.serve(async (req: Request) => {
           console.error(`[send-envelope-email] completion recipient ${s.id} has no email — skipping`);
           continue;
         }
-        const viewUrl = `${appUrl}/sign/${env.signing_token ?? ''}`;
         const mail = buildCompletionEmail({ name, documentName, viewUrl });
         try {
           await sendSmtpMail(smtpConfig(), email, mail.subject, mail.html, mail.text, [attachment]);
